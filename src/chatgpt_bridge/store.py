@@ -5,7 +5,7 @@ import hashlib
 import json
 import shutil
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -81,6 +81,7 @@ class ChatSummary:
     turn_count: int | None
     fetched_at: str | None
     stale: bool
+    parse_version: int
 
 
 @dataclass(frozen=True)
@@ -246,12 +247,11 @@ def upsert_listed_chats(
             )
 
 
-def mark_missing_stale(conn: sqlite3.Connection, seen_at: str) -> list[str]:
-    """Mark chats not seen in this listing as stale. Returns their IDs."""
-    rows = conn.execute(
-        "SELECT id FROM chats WHERE last_seen_at < ? AND stale = 0", (seen_at,)
-    ).fetchall()
-    ids = [str(row["id"]) for row in rows]
+def mark_missing_stale(conn: sqlite3.Connection, seen_ids: Collection[str]) -> list[str]:
+    """Mark cached chats that this listing did not include as stale. Returns their IDs."""
+    seen = set(seen_ids)
+    rows = conn.execute("SELECT id FROM chats WHERE stale = 0").fetchall()
+    ids = [str(row["id"]) for row in rows if str(row["id"]) not in seen]
     if ids:
         with _transaction(conn):
             conn.executemany("UPDATE chats SET stale = 1 WHERE id = ?", [(i,) for i in ids])
@@ -354,6 +354,7 @@ def chat_summaries(
             turn_count=row["turn_count"],
             fetched_at=row["fetched_at"],
             stale=bool(row["stale"]),
+            parse_version=int(row["parse_version"]),
         )
         for row in conn.execute(sql, params).fetchall()
     ]
@@ -450,8 +451,7 @@ def search(
     if len(query) >= 3:
         match = _fts_query(query)
         sql = (
-            "SELECT t.chat_id, c.title, t.position, t.role, "
-            "snippet(turns_fts, 0, '[', ']', '…', 12) AS snippet "
+            "SELECT t.chat_id, c.title, t.position, t.role, t.text AS text "
             "FROM turns_fts JOIN turns t ON t.rowid = turns_fts.rowid "
             "JOIN chats c ON c.id = t.chat_id "
             f"WHERE turns_fts MATCH ?{where} "
@@ -460,14 +460,13 @@ def search(
         rows = conn.execute(sql, [match, *params, limit]).fetchall()
     else:
         sql = (
-            "SELECT t.chat_id, c.title, t.position, t.role, "
-            "substr(t.text, max(1, instr(lower(t.text), lower(?)) - 40), 120) AS snippet "
+            "SELECT t.chat_id, c.title, t.position, t.role, t.text AS text "
             "FROM turns t JOIN chats c ON c.id = t.chat_id "
             f"WHERE lower(t.text) LIKE lower(?){where} "
             "ORDER BY t.chat_id, t.position LIMIT ?"
         )
         like = f"%{query}%"
-        rows = conn.execute(sql, [query, like, *params, limit]).fetchall()
+        rows = conn.execute(sql, [like, *params, limit]).fetchall()
 
     return [
         SearchHit(
@@ -475,10 +474,30 @@ def search(
             title=str(row["title"]),
             position=int(row["position"]),
             role=str(row["role"]),
-            snippet=str(row["snippet"] or ""),
+            snippet=_snippet(str(row["text"] or ""), query),
         )
         for row in rows
     ]
+
+
+SNIPPET_WIDTH = 200
+
+
+def _snippet(text: str, query: str, width: int = SNIPPET_WIDTH) -> str:
+    """A window of text around the first match, with ellipses at the cut edges."""
+    folded = text.lower()
+    first_term = next((term for term in query.split() if term), query)
+    index = folded.find(first_term.lower())
+    if index < 0:
+        window = text[:width]
+        return window + "…" if len(text) > width else window
+    start = max(0, index - width // 3)
+    end = min(len(text), start + width)
+    start = max(0, end - width)
+    window = text[start:end].replace("\n", " ")
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(text) else ""
+    return f"{prefix}{window}{suffix}"
 
 
 def _fts_query(query: str) -> str:

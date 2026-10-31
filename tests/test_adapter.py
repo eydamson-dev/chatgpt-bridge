@@ -4,8 +4,8 @@ import pytest
 
 from chatgpt_bridge.adapters import chatgpt
 from chatgpt_bridge.adapters.chatgpt import (
-    ChatNotFound,
     ChatGPTAdapter,
+    ChatNotFound,
     LoginRequired,
     chat_id_from_url,
     chat_url,

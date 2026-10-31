@@ -110,8 +110,7 @@ def test_upsert_does_not_clear_fetched_content(conn) -> None:
 def test_stale_marking_and_recovery(conn) -> None:
     make_chat(conn, "c1")
     make_chat(conn, "c2")
-    later = "2099-01-01T00:00:00+00:00"
-    stale = store.mark_missing_stale(conn, later)
+    stale = store.mark_missing_stale(conn, set())
     assert set(stale) == {"c1", "c2"}
     assert store.get_chat(conn, "c1").stale  # type: ignore[union-attr]
 
@@ -128,7 +127,7 @@ def test_stale_marking_and_recovery(conn) -> None:
 def test_stale_filter(conn) -> None:
     make_chat(conn, "c1")
     make_chat(conn, "c2")
-    store.mark_missing_stale(conn, "2099-01-01T00:00:00+00:00")
+    store.mark_missing_stale(conn, set())
     assert [c.id for c in store.chat_summaries(conn, stale=True)] == ["c1", "c2"]
     assert store.chat_summaries(conn, stale=False) == []
 

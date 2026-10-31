@@ -118,7 +118,9 @@ LOAD_EARLIER_JS = """
   main.scrollTop = 0;
   const candidates = Array.from(document.querySelectorAll('button, [role="button"], div'));
   const button = candidates.find(
-    (el) => el.children.length === 0 && /loading older messages|load earlier/i.test(el.textContent || '')
+    (el) =>
+      el.children.length === 0 &&
+      /loading older messages|load earlier/i.test(el.textContent || '')
   );
   if (button) {
     button.click();

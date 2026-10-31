@@ -7,8 +7,8 @@ these functions hand back strings.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Literal
 
