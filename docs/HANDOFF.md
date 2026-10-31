@@ -5,13 +5,17 @@ not history. Update it at the end of every milestone: rewrite the "Current state
 and "Next step" sections, and append to "Decisions" and "Gotchas" only when
 something durable was learned.
 
-Last updated: 2026-10-31 (on-demand rework complete; live tests added)
+Last updated: 2026-10-31 (public repo, MIT license, rewritten author)
 
 ## What this project is
 
 A CLI and MCP server that pull one ChatGPT conversation at a time out of a
 logged-in Chromium browser (CDP) and store it in a local SQLite database for
 reading and search.
+
+- **Repository:** <https://github.com/eydamson-dev/chatgpt-bridge> (public, MIT).
+- Contains code and docs only. Chat data never enters the repository; the
+  database is git-ignored.
 
 - **On demand only.** Nothing scans or mirrors the user's chat history.
 - **The local store is not a disposable cache.** Chats you have not fetched are
@@ -109,6 +113,12 @@ uv run chatgpt-bridge fetch "<title>"  # served from local store, no page load
   lookup source.
 - **2026-10-31 — schema v2 discards v1 data.** The v1 database held a backfill
   the user did not want. Migration drops it.
+- **2026-10-31 — public repository under MIT.** The repository holds code, tests
+  and docs only; no chat content, no fixtures from real conversations. Sample
+  titles in tests were neutralized before publishing.
+- **2026-10-31 — commit identity.** History was rewritten to
+  `eydamson-dev <eydamson-dev@users.noreply.github.com>` and force-pushed, before
+  the repository was shared.
 - **2026-10-31 — terminology.** "Cache" is used only for internal identifiers.
   User-facing docs and output say "local store" / "stored", because the database
   is real storage, not a disposable copy.

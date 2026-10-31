@@ -3,6 +3,8 @@
 Pull a specific ChatGPT conversation into your terminal or into OpenCode, on
 demand.
 
+Repository: <https://github.com/eydamson-dev/chatgpt-bridge> · MIT licensed
+
 It attaches to a Chromium-based browser you are already logged into, opens that
 one chat in its own background tab, extracts it, and stores it in a local SQLite
 database. It does not mirror your chat history: nothing is fetched until you
@@ -210,7 +212,10 @@ and error types — never message text.
 
 ## License
 
-MIT. See `LICENSE`.
+MIT — see [`LICENSE`](LICENSE).
+
+The repository contains no chat data. Conversations live only in your local
+database (`~/.local/share/chatgpt-bridge/bridge.db`), which is git-ignored.
 
 ## Development
 

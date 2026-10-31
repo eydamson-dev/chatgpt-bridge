@@ -374,6 +374,9 @@ Environment: `CHATGPT_BRIDGE_CDP_URL`, `CHATGPT_BRIDGE_DATA_DIR`,
 
 - Package `chatgpt-bridge`, console scripts `chatgpt-bridge` and
   `chatgpt-bridge-mcp`.
+- Public repository at <https://github.com/eydamson-dev/chatgpt-bridge> under
+  the MIT license. The repository carries code and docs only; chat data stays in
+  the local, git-ignored database.
 - `uv tool install ~/projects/chatgpt-bridge`.
 - Semantic versions; `CHANGELOG.md` per version.
 - OpenCode config uses `chatgpt-bridge-mcp` from PATH; enable per session.

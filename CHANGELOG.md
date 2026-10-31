@@ -10,6 +10,7 @@ cache now holds only chats you asked for.
 
 ### Added
 
+- Public repository under the MIT license.
 - `fetch <url|id|prefix|title>` — fetch one conversation and store it.
   `--refresh` refetches and reports whether the content changed.
 - `chats` — visible sidebar list for title lookup (read-only, no scrolling);
