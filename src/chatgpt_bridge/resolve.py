@@ -122,6 +122,8 @@ def resolve_from_cache(target: str, summaries: list[ChatSummary]) -> Resolved | 
 def resolve_with_listing(target: str, refs: list[ChatRef]) -> Resolved:
     """Resolve against the visible sidebar list. Raises TargetNotFound/Ambiguous."""
     candidate = target.strip()
+    if not candidate:
+        raise TargetNotFound("target is empty")
     direct = target_id(candidate)
     id_like_miss = False
     if direct is not None:

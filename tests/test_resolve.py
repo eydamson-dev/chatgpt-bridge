@@ -128,6 +128,11 @@ def test_listing_resolution_missing_suggests_chats() -> None:
         resolve_with_listing("nope", [ref("c1", "Other")])
 
 
+def test_listing_resolution_rejects_empty_target() -> None:
+    with pytest.raises(TargetNotFound, match="target is empty"):
+        resolve_with_listing("   ", [ref("c1", "Other")])
+
+
 def test_listing_resolution_short_id_prefix_missing() -> None:
     with pytest.raises(TargetNotFound, match="visible chat list"):
         resolve_with_listing("abc123", [ref("zzz999", "Other")])

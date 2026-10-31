@@ -4,8 +4,10 @@
 
 A CLI and MCP server that pulls one ChatGPT conversation at a time out of a
 logged-in Chromium browser over CDP, and stores it in a local SQLite database for
-reading and full-text search. It is **on demand**: nothing scans or mirrors the
-user's chat history. The database is real storage, not a disposable cache.
+reading and full-text search. It can also send one explicitly confirmed message
+to an existing chat, or create one chat with one message. It is **on demand**:
+nothing scans or mirrors the user's chat history. The database is real storage,
+not a disposable cache.
 
 ## Read the docs first
 
@@ -21,9 +23,12 @@ user's chat history. The database is real storage, not a disposable cache.
 
 ## Hard rules
 
-- **Read-only.** Do not add any code path that writes to ChatGPT (send, create,
-  rename, delete, branch switching). Sending is a later, separately designed
-  feature.
+- **Writes are explicit and confirmed.** `send_message` and `create_chat` are the
+  only write paths. Never send without an explicit user request. CLI requires an
+  interactive prompt or `--yes`; MCP requires `confirm=true` and, for
+  `send_message`, the `expected_chat_id` from a dry run. One message per call,
+  no retries after submit, no bulk sending, no renaming, deleting, or branch
+  switching.
 - **On demand only.** Do not add bulk sync, backfill, history walking, or
   background refresh. One named chat is fetched per request.
 - **Never handle credentials.** Do not read, store, print, or log cookies,
@@ -67,6 +72,7 @@ uv run ruff check . && uv run ruff format --check .
 uv run mypy                      # strict, whole package
 uv run pytest                    # unit, fake-source, CLI, MCP (no browser)
 uv run pytest -m live            # real browser, read-only; needs CDP reachable
+CHATGPT_BRIDGE_ALLOW_SEND=1 uv run pytest -m live_send   # creates and sends
 ```
 
 ## Tests

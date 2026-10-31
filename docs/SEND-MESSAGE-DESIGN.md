@@ -1,20 +1,21 @@
-# `send_message` — design proposal (not implemented)
+# `send_message` — design and implementation
 
-**Status:** proposed, awaiting approval. There is no write path in the code today.
-`AGENTS.md` says sending is a separately designed feature, so nothing here is
-built until the checklist at the end is approved.
+**Status:** approved by the user on 2026-11-01 and implemented in 0.3.0.
+`send_message` appends one message to an existing chat; `create_chat` starts one
+new chat with one message. Both are exercised by a gated live test and by the
+acceptance run in `docs/ACCEPTANCE.md`.
 
-This document answers the five questions in `docs/HANDOFF.md` and records the
-safety rules that make a write path acceptable at all.
+This document records the decisions and the safety rules that make the write
+path acceptable. It is a design record; the code is authoritative for detail.
 
 ## Scope
 
-**Phase 1 (recommended):** append one user message to one **existing** chat,
-submit it, wait for the assistant reply, and return it.
+**Implemented:** append one user message to one **existing** chat, submit it,
+wait for the assistant reply, and return it. The approved scope also includes
+creating one new chat with one message (`create_chat` / `new`).
 
-Explicitly out of scope for phase 1:
+Explicitly out of scope:
 
-- creating a new chat (`F-61`);
 - renaming, deleting, archiving, or branching;
 - changing the model or mode;
 - uploading attachments, voice, or images;
@@ -35,8 +36,9 @@ Send to "Fedora notes" (6ae5de7d)?
 Ambiguous targets fail with the candidate list and send nothing. A URL that is
 not the loaded chat's URL aborts the send.
 
-**New chat** is a later milestone. It shares the composer but adds creation,
-navigation, and a different failure surface.
+**New chat** uses the same composer on the home page. The tool waits for the
+URL to become a real `/c/<id>` (ChatGPT first shows a temporary
+`local-chatgpt:` URL), then stores the new conversation.
 
 ### 2. Confirmation gate
 
@@ -112,26 +114,27 @@ ChatGPT accepted the message.
    uniquely, raise `ParseDriftError` before typing.
 7. **Read-only stays the default.** `send` is not part of `fetch`, `show`,
    `search`, `chats`, `doctor`, or any MCP read tool.
-8. **Polite pacing.** Enforce a minimum gap between sends (default 5 s) and never
-   send more than one message per call.
+8. **One message per call.** No bulk sends, queues, or background work; the
+   confirmation step is the pacing control.
 
-## Data model (optional, schema v3)
+## Data model (schema v3)
 
-If send history is wanted, add metadata only:
+Implemented as metadata only:
 
 ```sql
 CREATE TABLE send_log (
   id          INTEGER PRIMARY KEY,
   chat_id     TEXT NOT NULL,
   sent_at     TEXT NOT NULL,
-  status      TEXT NOT NULL,   -- sent | unknown | refused
-  detail      TEXT             -- error type or refusal reason, never chat text
+  status      TEXT NOT NULL CHECK (status IN ('sent', 'unknown')),
+  detail      TEXT             -- error type, never chat text
 );
 ```
 
-Do **not** duplicate the message text in `send_log`; after a successful send the
-conversation is refreshed through the read path and the turn is stored normally.
-If send history is not wanted, phase 1 needs no schema change at all.
+The message text is **not** duplicated in `send_log`; after a successful send
+the conversation is refreshed through the read path and the turn is stored
+normally. `status` records `unknown` when the page closed before a complete
+reply was observed.
 
 ## Test plan
 
@@ -145,8 +148,8 @@ Unit, no browser:
 - URL mismatch after load aborts before typing;
 - missing composer/send button raises drift and stores nothing;
 - submit timeout returns `unknown` and does not retry;
-- success returns the reply and records one `sent` row (if `send_log` is added);
-- logs contain no message text, title, or URL.
+- success returns the reply and records one `sent` row;
+- logs and `send_log` contain no message text, title, or URL.
 
 Live, opt-in only:
 
@@ -156,20 +159,26 @@ Live, opt-in only:
   message, asserts one new assistant turn;
 - never runs in CI.
 
-## Approval checklist
+## Approved decisions (2026-11-01)
 
-- [ ] Existing chat only for phase 1; new chat later.
-- [ ] CLI prompt plus `--yes`; MCP dry run by default, `confirm=true` plus
+- [x] Existing chat and new chat are both in scope.
+- [x] CLI prompt plus `--yes`; MCP dry run by default, `confirm=true` plus
       `expected_chat_id` to send.
-- [ ] Keep the user's current model and mode.
-- [ ] Append to the displayed branch; refuse when the composer has a draft.
-- [ ] No automatic retry; `unknown` outcome after submit timeout.
-- [ ] Whether to add `send_log` (metadata only) in schema v3.
-- [ ] Whether the MCP send tool is opt-in per session.
-- [ ] Whether to build the live-send test behind `CHATGPT_BRIDGE_ALLOW_SEND=1`.
+- [x] Keep the user's current model and mode.
+- [x] Append to the displayed branch; refuse when the composer has a draft.
+- [x] No automatic retry; `unknown` outcome after submit timeout.
+- [x] Metadata-only `send_log` in schema v3.
+- [x] MCP write tools are present but should be enabled per session.
+- [x] Live-send test gated by `CHATGPT_BRIDGE_ALLOW_SEND=1`; never in CI.
 
-## Estimated work
+## Implementation (0.3.0)
 
-Adapter composer methods, a send service, CLI and MCP surfaces, confirmation
-tests, optional schema v3, docs, and a gated live test: roughly one to two days,
-with the live test run manually against a disposable chat.
+- `send.py` resolves the target, enforces `expected_chat_id`, calls the adapter,
+  stores the refreshed conversation, and records one `send_log` row.
+- The adapter owns composer typing, draft refusal, send-button detection, URL
+  verification, and reply stability. All selectors stay in
+  `adapters/chatgpt.py`.
+- CLI `send` / `new` and MCP `send_message` / `create_chat` are the surfaces.
+- Tests: unit coverage for refusals, timeout, storage, and logging; live read
+  tests unchanged; one gated live create+send+read-back test.
+- Acceptance evidence: `docs/ACCEPTANCE.md`.

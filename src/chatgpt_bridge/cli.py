@@ -8,13 +8,24 @@ from pathlib import Path
 from typing import Any
 
 from chatgpt_bridge import __version__, config, paths, query, store
-from chatgpt_bridge.adapters.chatgpt import ChatGPTAdapter, ChatNotFound, LoginRequired
+from chatgpt_bridge import send as send_service
+from chatgpt_bridge.adapters.chatgpt import (
+    ChatGPTAdapter,
+    ChatNotFound,
+    LoginRequired,
+    SendFailed,
+)
 from chatgpt_bridge.browser import Browser, BrowserError
 from chatgpt_bridge.fetch import fetch_chat
 from chatgpt_bridge.lock import LockBusy, is_locked, sync_lock
 from chatgpt_bridge.logging_setup import get_logger, log_file, setup_logging
 from chatgpt_bridge.parse import ParseDriftError
-from chatgpt_bridge.resolve import AmbiguousTarget, TargetNotFound
+from chatgpt_bridge.resolve import (
+    AmbiguousTarget,
+    Resolved,
+    TargetNotFound,
+    resolve_with_listing,
+)
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -26,6 +37,7 @@ EXIT_LOGIN = 6
 EXIT_AMBIGUOUS = 7
 EXIT_CACHE = 8
 EXIT_LOCKED = 9
+EXIT_UNKNOWN = 10
 
 log = get_logger("cli")
 
@@ -41,44 +53,69 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("-q", "--quiet", action="store_true", help="suppress progress output")
 
+    # Let global flags also follow the subcommand, e.g. `fetch x --json`.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config", type=Path, metavar="FILE", default=argparse.SUPPRESS)
+    common.add_argument("--cdp-url", metavar="URL", default=argparse.SUPPRESS)
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    common.add_argument("-q", "--quiet", action="store_true", default=argparse.SUPPRESS)
+
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    sub.add_parser("version", help="show app version")
-    sub.add_parser("status", help="local store size and last fetch")
-    sub.add_parser("doctor", help="check browser, login, parser, and database")
+    def add(name: str, **kwargs: Any) -> argparse.ArgumentParser:
+        return sub.add_parser(name, parents=[common], **kwargs)
 
-    chats = sub.add_parser("chats", help="list chats")
+    add("version", help="show app version")
+    add("status", help="local store size and last fetch")
+    add("doctor", help="check browser, login, parser, and database")
+
+    chats = add("chats", help="list chats")
     chats.add_argument("--stored", action="store_true", help="only chats already fetched")
     chats.add_argument("--limit", type=int)
 
-    fetch = sub.add_parser("fetch", help="fetch one chat into the local store")
+    fetch = add("fetch", help="fetch one chat into the local store")
     fetch.add_argument("target", help="chat URL, id, id prefix, or title")
     fetch.add_argument("--refresh", action="store_true", help="refetch even if already stored")
     fetch.add_argument("--format", choices=["text", "md", "json"], default="md")
 
-    show = sub.add_parser("show", help="print a stored chat")
+    send = add("send", help="send one message to an existing chat")
+    send.add_argument("target", help="chat URL, id, id prefix, or title")
+    send.add_argument("message", help="message to send")
+    send.add_argument("--yes", action="store_true", help="do not prompt")
+    send.add_argument("--dry-run", action="store_true", help="show the target without sending")
+
+    new = add(
+        "new",
+        aliases=["create-chat"],
+        help="create a new chat with one message",
+    )
+    new.add_argument("message", help="first message")
+    new.add_argument("--yes", action="store_true", help="do not prompt")
+    new.add_argument("--dry-run", action="store_true", help="show the message without sending")
+
+    show = add("show", help="print a stored chat")
     show.add_argument("target")
     show.add_argument("--format", choices=["text", "md", "json"], default="text")
 
-    find = sub.add_parser("search", help="search stored messages")
+    find = add("search", help="search stored messages")
     find.add_argument("query")
     find.add_argument("--chat", help="restrict to one stored chat")
     find.add_argument("--limit", type=int)
 
-    forget = sub.add_parser("forget", help="remove one chat from the local store")
+    forget = add("forget", help="remove one chat from the local store")
     forget.add_argument("target")
     forget.add_argument("--yes", action="store_true", help="do not prompt")
 
-    cfg = sub.add_parser("config", help="show effective settings")
+    cfg = add("config", help="show effective settings")
     cfg.add_argument("--show", action="store_true")
 
-    export = sub.add_parser("export-raw", help="dump the local store as JSON Lines")
+    export = add("export-raw", help="dump the local store as JSON Lines")
     export.add_argument("--out", type=Path, metavar="FILE")
 
-    reset = sub.add_parser("reset", help="delete every stored chat")
+    reset = add("reset", help="delete every stored chat")
     reset.add_argument("--yes", action="store_true", help="do not prompt")
 
-    sync = sub.add_parser("sync", help=argparse.SUPPRESS)
+    sync = add("sync", help=argparse.SUPPRESS)
     sync.add_argument("--full", action="store_true", help=argparse.SUPPRESS)
     sync.add_argument("--limit", type=int, help=argparse.SUPPRESS)
     sync.add_argument("rest", nargs="*", help=argparse.SUPPRESS)
@@ -107,6 +144,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "doctor": _cmd_doctor,
         "chats": _cmd_chats,
         "fetch": _cmd_fetch,
+        "send": _cmd_send,
+        "new": _cmd_new,
+        "create-chat": _cmd_new,
         "show": _cmd_show,
         "search": _cmd_search,
         "forget": _cmd_forget,
@@ -148,6 +188,12 @@ def _run(handler: Any, args: argparse.Namespace, resolved: config.Resolved) -> i
     except BrowserError as exc:
         _err(str(exc))
         return EXIT_BROWSER
+    except send_service.SendError as exc:
+        _err(str(exc))
+        return EXIT_USAGE
+    except SendFailed as exc:
+        _err(str(exc))
+        return EXIT_ERROR
     except LockBusy as exc:
         _err(str(exc))
         return EXIT_LOCKED
@@ -205,6 +251,7 @@ def _cmd_status(args: argparse.Namespace, resolved: config.Resolved) -> int:
         "chats": counts.chats,
         "turns": counts.turns,
         "last_fetch": counts.last_fetch,
+        "last_send": counts.last_send,
         "fetch_running": is_locked(paths.lock_path()),
         "last_fetch_detail": None
         if last is None
@@ -217,6 +264,7 @@ def _cmd_status(args: argparse.Namespace, resolved: config.Resolved) -> int:
             f"stored chats {counts.chats} ({counts.turns} messages)",
             f"fetching     {'yes' if payload['fetch_running'] else 'no'}",
             f"last fetch   {counts.last_fetch or 'never'}",
+            f"last send    {counts.last_send or 'never'}",
             f"log file     {payload['log_file']}",
         ]
     )
@@ -268,9 +316,7 @@ def _cmd_chats(args: argparse.Namespace, resolved: config.Resolved) -> int:
     return EXIT_OK
 
 
-def _cmd_fetch(args: argparse.Namespace, resolved: config.Resolved) -> int:
-    settings = resolved.settings
-
+def _make_session(settings: config.Settings) -> Any:
     def session() -> Any:
         browser = Browser(settings.cdp_url)
         browser.connect()
@@ -278,11 +324,17 @@ def _cmd_fetch(args: argparse.Namespace, resolved: config.Resolved) -> int:
             browser, ChatGPTAdapter(browser, page_delay_s=min(settings.min_delay_s, 1.0))
         )
 
+    return session
+
+
+def _cmd_fetch(args: argparse.Namespace, resolved: config.Resolved) -> int:
+    settings = resolved.settings
+
     with sync_lock(paths.lock_path(), timeout_s=0):
         result = fetch_chat(
             args.target,
             refresh=args.refresh,
-            session=session,
+            session=_make_session(settings),
             lookup_limit=settings.lookup_limit,
         )
     chat = result.chat
@@ -303,6 +355,109 @@ def _cmd_fetch(args: argparse.Namespace, resolved: config.Resolved) -> int:
             query.render_markdown(chat) if args.format == "md" else query.render_text(chat), end=""
         )
     return EXIT_OK
+
+
+def _cmd_send(args: argparse.Namespace, resolved: config.Resolved) -> int:
+    settings = resolved.settings
+    target = send_service.preview(args.target)
+    label = f'"{target.title}" ({target.id[:8]})' if target is not None else repr(args.target)
+
+    if args.dry_run:
+        payload = {
+            "dry_run": True,
+            "target": args.target,
+            "resolved": None
+            if target is None
+            else {"id": target.id, "title": target.title, "url": target.url},
+            "message": args.message,
+        }
+        text = f"would send to {label}: {_message_preview(args.message)}"
+        _emit(args, payload, text)
+        return EXIT_OK
+
+    expected_chat_id: str | None = None
+    if not args.yes:
+        if not sys.stdin.isatty():
+            _err("refusing to send without --yes when stdin is not a terminal")
+            return EXIT_USAGE
+        # Show the real chat title and ID, even for an uncached title.
+        if target is None:
+            target = _resolve_live(settings, args.target)
+            label = f'"{target.title}" ({target.id[:8]})'
+        if not _confirm("Send to", label, args.message):
+            print("cancelled")
+            return EXIT_OK
+        expected_chat_id = target.id
+
+    with sync_lock(paths.lock_path(), timeout_s=0):
+        result = send_service.send_message(
+            args.target,
+            args.message,
+            expected_chat_id=expected_chat_id,
+            session=_make_session(settings),
+            lookup_limit=settings.lookup_limit,
+        )
+    return _report_send(args, result)
+
+
+def _resolve_live(settings: config.Settings, target: str) -> Resolved:
+    with Browser(settings.cdp_url) as browser:
+        adapter = ChatGPTAdapter(browser, page_delay_s=min(settings.min_delay_s, 1.0))
+        refs = adapter.list_chats(scroll=False, limit=settings.lookup_limit)
+    return resolve_with_listing(target, refs)
+
+
+def _cmd_new(args: argparse.Namespace, resolved: config.Resolved) -> int:
+    settings = resolved.settings
+    if args.dry_run:
+        payload = {"dry_run": True, "message": args.message}
+        _emit(args, payload, f"would create a new chat with: {_message_preview(args.message)}")
+        return EXIT_OK
+
+    if not args.yes:
+        if not sys.stdin.isatty():
+            _err("refusing to create a chat without --yes when stdin is not a terminal")
+            return EXIT_USAGE
+        if not _confirm("Create a new chat and send", "a new conversation", args.message):
+            print("cancelled")
+            return EXIT_OK
+
+    with sync_lock(paths.lock_path(), timeout_s=0):
+        result = send_service.create_chat(args.message, session=_make_session(settings))
+    return _report_send(args, result)
+
+
+def _confirm(action: str, label: str, message: str) -> bool:
+    print(f"{action} {label}", file=sys.stderr)
+    print(f"message: {_message_preview(message)}", file=sys.stderr)
+    return input("Proceed? [y/N] ").strip().lower() in {"y", "yes"}
+
+
+def _message_preview(message: str, width: int = 200) -> str:
+    one_line = " ".join(message.split())
+    return one_line if len(one_line) <= width else f"{one_line[:width]}…"
+
+
+def _report_send(args: argparse.Namespace, result: send_service.SendResult) -> int:
+    if args.json:
+        payload: dict[str, Any] = {
+            "outcome": result.outcome,
+            "chat_id": result.chat_id,
+            "url": result.url,
+            "reply": result.reply,
+        }
+        if result.chat is not None:
+            payload["chat"] = query.envelope(result.chat).as_dict()
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    elif result.outcome == "unknown":
+        _err("the message may have been sent, but no complete reply arrived")
+        print(result.url)
+    else:
+        print(result.reply or "")
+    if not args.quiet:
+        short_id = result.chat_id[:8] or "unknown"
+        print(f"{result.outcome}: {short_id}", file=sys.stderr)
+    return EXIT_OK if result.outcome == "sent" else EXIT_UNKNOWN
 
 
 class _Session:

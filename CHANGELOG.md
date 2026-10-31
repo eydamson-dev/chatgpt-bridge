@@ -3,6 +3,47 @@
 User-visible changes only. Implementation detail lives in git history,
 `PLAN.md`, and `docs/HANDOFF.md`.
 
+## 0.3.0 — explicit write path
+
+Adds the only two write operations, both confirmed and one message per call:
+send to an existing chat, or create a new chat with one message. Everything
+else remains read-only.
+
+### Added
+
+- `chatgpt-bridge send <target> "<message>"` — resolve a chat, show a
+  confirmation prompt, send, wait for the reply, and store the refreshed
+  conversation. `--dry-run` resolves without sending; `--yes` skips the prompt.
+- `chatgpt-bridge new "<message>"` (alias `create-chat`) — create a chat with
+  one message and store it.
+- MCP `send_message(target, message, confirm, expected_chat_id)` — dry run by
+  default; sending requires `confirm=true` and the `expected_chat_id` returned
+  by the dry run.
+- MCP `create_chat(message, confirm)` — dry run by default; sending requires
+  `confirm=true`.
+- Schema v3 `send_log`: chat ID, time, and `sent`/`unknown` status. No message
+  text is stored there.
+- `status` reports the last send alongside the last fetch.
+
+### Safety behaviour
+
+- A new tab is used and closed in `finally`; the user's tabs are never touched.
+- The loaded chat URL must match the resolved ID before typing.
+- An existing composer draft is refused, never overwritten.
+- The typed text must match the requested message exactly before Send is
+  clicked.
+- A reply that does not finish in time returns `unknown` (exit code 10) and is
+  never retried automatically.
+- `send_message` refuses if `expected_chat_id` does not match the resolved chat.
+- A successful send refreshes the local store, so `show`, `search`, and
+  `get_chat` work immediately.
+
+### Testing
+
+- `CHATGPT_BRIDGE_ALLOW_SEND=1 uv run pytest -m live_send` runs one real
+  create + send + read-back test. It is disabled by default and never runs in
+  CI. The normal `live` tests remain read-only.
+
 ## 0.2.1 — hardening
 
 Fixes found while verifying the 0.2.0 release end to end. No behaviour changes

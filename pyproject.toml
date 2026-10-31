@@ -1,6 +1,6 @@
 [project]
 name = "chatgpt-bridge"
-version = "0.2.1"
+version = "0.3.0"
 description = "Read and search your ChatGPT web conversations via a logged-in Chromium browser over CDP."
 readme = "README.md"
 license = { text = "MIT" }
@@ -35,6 +35,7 @@ packages = ["src/chatgpt_bridge"]
 testpaths = ["tests"]
 markers = [
     "live: uses a real CDP browser; skipped unless the endpoint responds",
+    "live_send: creates and sends real ChatGPT messages; needs CHATGPT_BRIDGE_ALLOW_SEND=1",
 ]
 addopts = "-m 'not live'"
 

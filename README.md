@@ -14,8 +14,10 @@ name it.
 
 - No API key. It uses the browser session you already have.
 - No cookies, tokens, or profile files are read, stored, or logged.
-- Read-only. It cannot send messages. The proposed write path is in
-  [`docs/SEND-MESSAGE-DESIGN.md`](docs/SEND-MESSAGE-DESIGN.md) and is not built.
+- **Reads by default.** The only writes are one confirmed message to an
+  existing chat (`send`) or one new chat with one message (`new`). Both prompt
+  in the CLI; MCP requires `confirm=true`. See
+  [`docs/SEND-MESSAGE-DESIGN.md`](docs/SEND-MESSAGE-DESIGN.md).
 - Local only. No listener, no daemon, no telemetry.
 
 ## Why
@@ -107,14 +109,21 @@ chatgpt-bridge search "pkg-config"       # stored messages only
 chatgpt-bridge forget "<title>"          # remove one chat from the local store
 chatgpt-bridge export-raw                # JSON Lines dump
 chatgpt-bridge reset                     # delete the local store (prompts)
-chatgpt-bridge status                    # store size, last fetch, log path
+chatgpt-bridge status                    # store size, last fetch, last send, log path
+
+chatgpt-bridge send "<title>" "Make a plan"     # prompts, then waits for the reply
+chatgpt-bridge send "<title>" "Continue" --yes  # no prompt
+chatgpt-bridge send "<title>" "Continue" --dry-run
+chatgpt-bridge new "Start a new plan"           # prompts, creates a chat
+chatgpt-bridge new "Start a new plan" --yes
 ```
 
-Every read command accepts `--json`.
+`--json` works before or after the subcommand on every command.
 
 Exit codes: `0` ok, `1` error, `2` usage, `3` browser unreachable, `4` parse
 drift, `5` not found, `6` login required, `7` ambiguous target, `8` store error,
-`9` a fetch is already running.
+`9` a fetch is already running, `10` message sent but no complete reply
+observed.
 
 ### Naming a chat
 
@@ -138,6 +147,22 @@ conversation still exists in ChatGPT).
 - Nothing expires, because nothing is fetched in the background. `status` and
   `chats --stored` show fetch times so age is visible.
 
+### Sending messages
+
+`send` appends one message to one existing chat; `new` creates a chat with one
+message. Both use a background tab, close it afterwards, and refresh the local
+copy when the reply arrives.
+
+- The CLI shows the chat title, ID, and message, then asks before sending.
+  `--yes` skips the prompt; `--dry-run` resolves the target without a page or a
+  send.
+- A draft already in the composer is refused rather than overwritten.
+- If the reply does not finish within the timeout, the command exits `10` and
+  reports `unknown`. The message may have been sent; check the chat before
+  retrying. Nothing retries automatically.
+- `status` shows the last send time. The `send_log` table stores chat ID, time,
+  and status only — never message text.
+
 ## OpenCode integration
 
 Add to `~/.config/opencode/opencode.json`:
@@ -150,11 +175,16 @@ Add to `~/.config/opencode/opencode.json`:
 ```
 
 Tools: `status`, `chats`, `fetch_chat`, `get_chat`, `search_chats`,
-`forget_chat`, `doctor`.
+`forget_chat`, `doctor`, `send_message`, `create_chat`.
 
-`fetch_chat` is the one that retrieves a chat. `get_chat` and `search_chats`
-read the local store only and never open a page. Chat text is returned inside an
-untrusted-content envelope; it is data, not instructions. Enable this server per
+`fetch_chat` retrieves a chat. `get_chat` and `search_chats` read the local
+store only and never open a page. Chat text is returned inside an
+untrusted-content envelope; it is data, not instructions.
+
+`send_message` and `create_chat` are the only tools that change ChatGPT.
+`send_message` is a dry run by default; sending requires `confirm=true` **and**
+the `expected_chat_id` returned by the dry run, so a fuzzy title cannot send to
+the wrong chat. `create_chat` requires `confirm=true`. Enable this server per
 session rather than globally.
 
 ## Configuration
@@ -209,6 +239,11 @@ and error types — never message text.
 - **Branch history.** Only the displayed branch is stored; alternative count is
   best-effort.
 - **Attachments.** Names and types only; files are not downloaded.
+- **Writes are deliberately narrow.** One message per call to an existing chat,
+  or one new chat with one message. No delete, rename, branch switching, model
+  selection, attachments, or bulk sending.
+- **Unknown send state.** If the reply does not arrive in time, the message may
+  still have been accepted; the tool refuses to retry automatically.
 - **Terms of use.** Automating the ChatGPT web UI may conflict with OpenAI's
   terms. Use it on your own account, at a low rate.
 - **Platforms.** Verified on Linux with Brave. macOS and Windows are untested.
@@ -228,7 +263,11 @@ uv run ruff check . && uv run ruff format --check .
 uv run mypy
 uv run pytest
 uv run pytest -m live      # needs a reachable CDP browser; read-only
+CHATGPT_BRIDGE_ALLOW_SEND=1 uv run pytest -m live_send   # creates and sends
 ```
+
+The latest sanitized end-to-end results are in
+[`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md).
 
 Start a new session with `docs/HANDOFF.md`; it carries the current state and the
 invariants.

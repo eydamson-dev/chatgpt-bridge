@@ -5,13 +5,14 @@ not history. Update it at the end of every milestone: rewrite the "Current state
 and "Next step" sections, and append to "Decisions" and "Gotchas" only when
 something durable was learned.
 
-Last updated: 2026-10-31 (0.2.1 hardening, CI, and the `send_message` design)
+Last updated: 2026-11-01 (0.3.0 write path and live acceptance)
 
 ## What this project is
 
 A CLI and MCP server that pull one ChatGPT conversation at a time out of a
 logged-in Chromium browser (CDP) and store it in a local SQLite database for
-reading and search.
+reading and search. They can also send one explicitly confirmed message to an
+existing chat, or create one new chat with one message.
 
 - **Repository:** <https://github.com/eydamson-dev/chatgpt-bridge> (public, MIT).
 - Contains code and docs only. Chat data never enters the repository; the
@@ -20,12 +21,14 @@ reading and search.
 - **On demand only.** Nothing scans or mirrors the user's chat history.
 - **The local store is not a disposable cache.** Chats you have not fetched are
   not stored anywhere locally, so `forget`/`reset` removes them from this tool.
-- **Read-only.** There is no code path that sends, edits, or deletes in ChatGPT.
-- Full design: `../PLAN.md`. Hard rules: `../AGENTS.md`.
+- **Writes are narrow and confirmed.** `send_message` and `create_chat` are the
+  only write paths. No edit, delete, rename, branch switching, or bulk sends.
+- Full design: `../PLAN.md`. Write decisions:
+  `SEND-MESSAGE-DESIGN.md`. Hard rules: `../AGENTS.md`.
 
 ## Current state
 
-Version **0.2.1**. Working, verified against a live browser (Brave on
+Version **0.3.0**. Working, verified against a live browser (Brave on
 `127.0.0.1:9222`):
 
 - Target resolution by URL, full ID, ID prefix, exact title, unique title
@@ -37,32 +40,41 @@ Version **0.2.1**. Working, verified against a live browser (Brave on
 - Search over stored messages (FTS5 trigram), with context snippets.
 - `forget` removes one chat; `reset` clears the whole local store (both prompt).
 - `doctor` checks config, database, CDP reachability, login, and sidebar lookup.
-- MCP server exposes `status`, `chats`, `fetch_chat`, `get_chat`,
-  `search_chats`, `forget_chat`, `doctor`; chat text is wrapped as untrusted
-  content.
-- 205 unit tests and 2 opt-in live tests pass on Python 3.12 and 3.14;
-  `ruff` and `mypy --strict` are clean.
-- The built wheel includes both migrations, installs into a clean virtual
+- `send` appends one confirmed message to an existing chat; `new` creates a chat
+  with one message. Both wait for the reply and refresh the local copy.
+  `--dry-run` resolves without a page or a send; `--yes` skips the prompt.
+- MCP server exposes nine tools: `status`, `chats`, `fetch_chat`, `get_chat`,
+  `search_chats`, `forget_chat`, `doctor`, `send_message`, `create_chat`.
+  `send_message` is a dry run unless `confirm=true` and `expected_chat_id`
+  matches; `create_chat` requires `confirm=true`. Chat text is wrapped as
+  untrusted content.
+- 232 unit tests, 2 opt-in read live tests, and 1 gated live send test pass;
+  `ruff` and `mypy --strict` are clean on Python 3.12 and 3.14.
+- The built wheel includes all three migrations, installs into a clean virtual
   environment, and both entry points work. `.github/workflows/ci.yml` repeats
   lint, format, types, tests (3.12–3.14), and a wheel smoke test.
-- A real stdio MCP handshake lists the seven tools and calls `status`; live
-  `doctor` passes against Chrome/Brave with 16 sidebar chats visible.
-- Logs, database, and `export-raw` output are user-only (`0600`). A failed
-  fetch records metadata only.
+- A real stdio MCP handshake exercises all nine tools; live `doctor` passes
+  against Chrome/Brave.
+- Logs, database, `send_log`, and `export-raw` output are user-only (`0600`).
+  A failed fetch records metadata only; a send records status and error type,
+  never message text.
+- Full feature evidence: `docs/ACCEPTANCE.md`.
 
-Schema is **version 2**. Migration `002_on_demand.sql` rebuilds the tables and
-discards v1 backfill data; a v1 database migrates automatically.
+Schema is **version 3**. Migration `002_on_demand.sql` rebuilds the tables and
+discards v1 backfill data; `003_send_log.sql` adds metadata for the write path.
+v1 and v2 databases migrate automatically.
 
 ## Repo map
 
 ```
 src/chatgpt_bridge/
   cli.py            command surface, exit codes, no business logic
-  mcp_server.py     seven tools; imports the fetch service as fetch_service
+  mcp_server.py     nine tools; imports services under aliases
   resolve.py        target -> chat id (URL/ID/prefix/title), pure
   fetch.py          fetch service: stored hit, refresh, save, fetch log
+  send.py           explicit write service: send one, create one, send log
   query.py          local-store reads: list, get, search, render, envelope
-  store.py          SQLite schema, migrations, FTS, fetch log
+  store.py          SQLite schema, migrations, FTS, fetch/send logs
   adapters/chatgpt.py   all ChatGPT selectors and labels
   browser.py        CDP connection, own tabs, reachability
   parse.py          HTML -> markdown/text, turn validation (pure)
@@ -73,9 +85,11 @@ src/chatgpt_bridge/
   doctor.py         environment checks
   maintenance.py    export-raw, reset
 tests/              unit, fake-source, CLI, MCP (no browser)
-tests/test_live.py  opt-in live checks (`-m live`)
+tests/test_live.py  opt-in read checks (`-m live`)
+tests/test_live_send.py  gated create/send check (`-m live_send`, needs env)
 .github/workflows/ci.yml   lint, types, tests, wheel smoke test
-docs/SEND-MESSAGE-DESIGN.md   proposed write path, not implemented
+docs/SEND-MESSAGE-DESIGN.md   write-path decisions, implemented in 0.3.0
+docs/ACCEPTANCE.md            sanitized evidence for every feature
 ```
 
 ## Verify before changing anything
@@ -86,6 +100,7 @@ uv run ruff check . && uv run ruff format --check .
 uv run mypy
 uv run pytest
 uv run pytest -m live          # needs a reachable, logged-in CDP browser
+CHATGPT_BRIDGE_ALLOW_SEND=1 uv run pytest -m live_send   # creates and sends
 uv build                       # wheel must contain migrations/*.sql
 ```
 
@@ -97,11 +112,15 @@ uv run chatgpt-bridge chats --stored   # what is in the local store
 uv run chatgpt-bridge chats            # visible sidebar, read-only
 uv run chatgpt-bridge fetch "<title>"  # one chat, stored locally
 uv run chatgpt-bridge fetch "<title>"  # served from local store, no page load
+uv run chatgpt-bridge send "<title>" "test" --dry-run
+uv run chatgpt-bridge send "<title>" "test"            # prompts; writes
+uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
 ```
 
 ## Invariants (do not break)
 
-1. Read-only. No send/create/edit/delete path in ChatGPT.
+1. Reads by default. Only `send_message` and `create_chat` write, both confirmed,
+   one message per call. No edit, delete, rename, branch switching, or bulk.
 2. No credentials. Never read cookies, tokens, headers, or profile files.
 3. Own tabs only, closed in `finally`; never `browser.close()`.
 4. Logs never contain chat text, titles, or URLs.
@@ -111,6 +130,12 @@ uv run chatgpt-bridge fetch "<title>"  # served from local store, no page load
    conversations the user has not fetched exist nowhere locally.
 8. Title lookup reads the visible sidebar only, never scrolls.
 9. A failed parse stores nothing.
+10. Before typing, the loaded chat URL must match the resolved ID and a
+    non-matching `expected_chat_id` must abort.
+11. An existing composer draft is refused; typed text must match exactly before
+    Send is clicked.
+12. Never retry after submit. A missing reply is `unknown`, never a silent
+    resend.
 
 ## Decisions (durable)
 
@@ -142,9 +167,16 @@ uv run chatgpt-bridge fetch "<title>"  # served from local store, no page load
   record the exception type only.
 - **2026-10-31 — no automatic expiry.** Stored chats never age out; `forget` and
   `reset` remain the only deletion paths.
-- **2026-10-31 — `send_message` is still unbuilt.** The write path is proposed in
-  `docs/SEND-MESSAGE-DESIGN.md` and needs the approval checklist before any code
-  is added.
+- **2026-11-01 — write path approved and built.** The user authorized testing,
+  sending, and creating chats. `send_message` and `create_chat` are the only
+  writes; MCP sending needs `confirm=true` plus the dry-run `expected_chat_id`.
+  Reply timeout is `unknown`, never an automatic retry.
+- **2026-11-01 — new chats are allowed, edits are not.** The approved scope
+  covers creating one chat with one message. Rename, delete, branch switching,
+  model selection, attachments, and bulk sends remain out of scope.
+- **2026-11-01 — send log is metadata only.** Schema v3 records chat ID, time,
+  status, and error type. Message text lives only in `turns`, written by the
+  normal refresh.
 
 ## Gotchas discovered
 
@@ -185,6 +217,17 @@ uv run chatgpt-bridge fetch "<title>"  # served from local store, no page load
   everything.
 - **The wheel must contain `migrations/*.sql`.** They are package data read at
   runtime; `uv build` + install into a clean venv is the check.
+- **The send button only exists once the composer has text.** The composer is
+  `div[contenteditable="true"][role="textbox"]`; after typing, the control is
+  `button[aria-label="Send"]`. Waiting for it before typing finds nothing.
+- **A new chat shows a temporary URL.** It becomes
+  `/c/local-chatgpt%3A<uuid>` before settling on `/c/<real-id>`; wait for the
+  real UUID, not the first `/c/` match.
+- **Reply completion is a stop-control + stability check.** While generating,
+  the button's aria-label is `Stop`. The reply is complete when that control is
+  gone and the last assistant turn's text length is stable for three polls.
+- **`send` is not idempotent.** After a reply timeout there is no safe way to
+  know whether ChatGPT accepted the message; report `unknown` and stop.
 
 ## Known limitations
 
@@ -194,34 +237,31 @@ uv run chatgpt-bridge fetch "<title>"  # served from local store, no page load
 - Attachments: names and types only, files not downloaded.
 - Archived chats are unreachable; project chats are not discoverable.
 - Linux verified. macOS and Windows are untested.
+- Writes are one message per call; no edit, delete, rename, or branch switching.
+- A reply timeout leaves the send `unknown`; the tool never retries.
 - Automating the web UI may conflict with OpenAI's terms; keep volume low.
 
 ## Next step
 
-All twelve read-only milestones in `PLAN.md` §16 are done, 0.2.1 is verified,
-and 205 unit tests plus 2 live tests pass. Nothing is in flight.
+Nothing is in flight. Milestones 1–14 in `PLAN.md` §16 are done; 0.3.0 is
+verified; all unit tests, 2 read live tests, and 1 gated send live test pass.
+`docs/ACCEPTANCE.md` records the full feature run.
 
-**Blocked on the user: approve the `send_message` design.** The proposal is in
-`docs/SEND-MESSAGE-DESIGN.md`; no write path exists in the code. The checklist
-needs a yes/no on:
+For the user's manual test tomorrow:
 
-1. Existing chat only in phase 1 (new chat later).
-2. CLI prompt plus `--yes`; MCP dry run by default, `confirm=true` plus
-   `expected_chat_id` to actually send.
-3. Keep the chat's current model and mode; no switching.
-4. Append to the displayed branch only; refuse when the composer already has a
-   draft.
-5. No automatic retry after submit; return `unknown` if the reply does not
-   arrive.
-6. Optional: metadata-only `send_log` in schema v3, an opt-in MCP send tool, and
-   a live-send test gated by `CHATGPT_BRIDGE_ALLOW_SEND=1`.
+```bash
+uv run chatgpt-bridge send "<a chat>" "Hello" --dry-run
+uv run chatgpt-bridge send "<a chat>" "Hello"          # prompts
+uv run chatgpt-bridge new "Start a test chat"          # prompts
+```
 
-Until that approval, keep the write path closed. A safe alternative is the
-remaining open question below: `fetch a b c` for several targets in one call.
+The acceptance run created a few clearly labelled test conversations in the
+account. They are left in place because deletion is deliberately not a feature;
+remove them in the ChatGPT UI if unwanted.
 
 ## Engineering vault
 
-Recorded (2026-10-31), for durable context rather than implementation detail:
+Recorded for durable context rather than implementation detail:
 
 - `Projects/ChatGPT-Bridge.md` — purpose, repo, stack, status, decisions,
   constraints, and a **Traps** section for project-specific non-obvious

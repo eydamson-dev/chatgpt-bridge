@@ -100,7 +100,7 @@ def test_fetch_serves_cache_without_browser(seeded: Path) -> None:
     assert payload["data"]["changed"] is False
 
 
-def test_tool_surface_is_read_only() -> None:
+def test_tool_surface_is_explicit() -> None:
     tools = asyncio.run(mcp_server.mcp.list_tools())
     names = {tool.name for tool in tools}
     assert names == {
@@ -111,8 +111,10 @@ def test_tool_surface_is_read_only() -> None:
         "search_chats",
         "forget_chat",
         "doctor",
+        "send_message",
+        "create_chat",
     }
-    assert not any(name for name in names if "send" in name or name == "sync")
+    assert not any(name for name in names if name in {"sync", "delete_chat", "rename_chat"})
 
 
 def test_tool_descriptions_flag_untrusted_content() -> None:
@@ -124,8 +126,31 @@ def test_tool_descriptions_flag_untrusted_content() -> None:
     assert "fetch_chat" in text
 
 
-def test_descriptions_never_offer_sending() -> None:
+def test_send_dry_run_returns_the_stored_chat(seeded: Path) -> None:
+    payload = mcp_server.send_message("fedora", "hello")
+    assert payload["ok"] is True
+    assert payload["dry_run"] is True
+    assert payload["chat_id"] == UUID
+    assert payload["requires"].startswith("confirm=true")
+
+
+def test_send_confirm_requires_expected_chat_id(seeded: Path) -> None:
+    payload = mcp_server.send_message("fedora", "hello", confirm=True)
+    assert payload["ok"] is False
+    assert "expected_chat_id" in payload["error"]
+
+
+def test_create_dry_run_sends_nothing() -> None:
+    payload = mcp_server.create_chat("hello")
+    assert payload["ok"] is True
+    assert payload["dry_run"] is True
+    assert payload["requires"] == "confirm=true"
+
+
+def test_write_tools_require_confirmation() -> None:
     tools = {tool.name: tool for tool in asyncio.run(mcp_server.mcp.list_tools())}
-    for name, tool in tools.items():
-        description = (tool.description or "").lower()
-        assert "send a message" not in description, name
+    send = (tools["send_message"].description or "").lower()
+    create = (tools["create_chat"].description or "").lower()
+    assert "confirm=true" in send and "expected_chat_id" in send
+    assert "confirm=true" in create
+    assert "untrusted" in send

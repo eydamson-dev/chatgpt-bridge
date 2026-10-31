@@ -5,14 +5,17 @@ from pathlib import Path
 
 import pytest
 
+from chatgpt_bridge import cli as cli_module
 from chatgpt_bridge import store
 from chatgpt_bridge.cli import (
     EXIT_BROWSER,
     EXIT_NOT_FOUND,
     EXIT_OK,
+    EXIT_UNKNOWN,
     EXIT_USAGE,
     main,
 )
+from chatgpt_bridge.send import SendResult
 
 UUID = "6ae5de7d-e0f8-83ec-9a71-cd2780e3bf72"
 
@@ -61,6 +64,13 @@ def test_status_json(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
 def test_status_text(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["status"]) == EXIT_OK
     assert "stored chats 2" in capsys.readouterr().out
+
+
+def test_json_flag_can_follow_the_subcommand(
+    seeded: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["status", "--json"]) == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["chats"] == 2
 
 
 def test_chats_cached(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -176,6 +186,49 @@ def test_reset_with_yes(seeded: Path, capsys: pytest.CaptureFixture[str]) -> Non
 def test_reset_json(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["--json", "reset", "--yes"]) == EXIT_OK
     assert json.loads(capsys.readouterr().out) == {"reset": True}
+
+
+def test_send_dry_run_resolves_stored_chat(
+    seeded: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["send", "6ae5de7d", "hello", "--dry-run"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "would send to" in out
+    assert "Fedora notes" in out
+
+
+def test_send_requires_yes_without_a_terminal(
+    seeded: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["send", "6ae5de7d", "hello"]) == EXIT_USAGE
+    assert "refusing to send" in capsys.readouterr().err
+
+
+def test_new_dry_run(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["new", "hello", "--dry-run"]) == EXIT_OK
+    assert "would create a new chat" in capsys.readouterr().out
+
+
+def test_send_prints_the_reply(
+    seeded: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_send(*_: object, **__: object) -> SendResult:
+        return SendResult(outcome="sent", chat_id=UUID, url="u", reply="the answer")
+
+    monkeypatch.setattr(cli_module.send_service, "send_message", fake_send)
+    assert main(["send", "6ae5de7d", "hello", "--yes"]) == EXIT_OK
+    assert "the answer" in capsys.readouterr().out
+
+
+def test_send_unknown_returns_exit_10(
+    seeded: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_send(*_: object, **__: object) -> SendResult:
+        return SendResult(outcome="unknown", chat_id=UUID, url="u")
+
+    monkeypatch.setattr(cli_module.send_service, "send_message", fake_send)
+    assert main(["send", "6ae5de7d", "hello", "--yes"]) == EXIT_UNKNOWN
+    assert "may have been sent" in capsys.readouterr().err
 
 
 def test_config_show(capsys: pytest.CaptureFixture[str]) -> None:

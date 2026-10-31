@@ -20,7 +20,8 @@ Typical flows:
   fetches the ones you name, and search then covers those.
 
 Surfaces: CLI (`chatgpt-bridge`) and MCP server (`chatgpt-bridge-mcp`), over one
-core. Read-only. Sending messages is a later, separately designed step.
+core. Reads are the default. The only writes are one confirmed message to an
+existing chat, or one new chat with one message.
 
 Out of scope: writing to the Obsidian vault (the AI's memory guidance covers
 that), multiple accounts, archived chats, and any background daemon.
@@ -36,7 +37,7 @@ that), multiple accounts, archived chats, and any background daemon.
 | Browser | Any CDP Chromium browser; default `http://127.0.0.1:9222`. The app only connects. |
 | ChatGPT extension | Not used. |
 | Accounts | Single account. |
-| Scope | Read-only. |
+| Scope | Read-only except `send_message` and `create_chat`, both confirmed and one message per call. |
 | Search | SQLite FTS5 (trigram) over stored messages only. |
 | Location | `~/projects/chatgpt-bridge/`, data in the platform data dir. |
 | Language | Python 3.12+. |
@@ -106,13 +107,14 @@ Defaults carried forward from the earlier plan, all accepted:
 - F-53 Reads never fetch; `get_chat` returns only stored content and explains
   how to fetch if missing. This keeps surprise page loads at zero.
 
-### 3.7 Later, not built
-- F-60 `send_message` with explicit confirmation.
-- F-61 Create a new chat.
+### 3.7 Explicit write path
+- F-60 `send_message` with explicit confirmation. ✅ 0.3.0
+- F-61 Create a new chat with one message (`new` / `create_chat`). ✅ 0.3.0
 
 ## 4. Non-functional requirements
 
-- N-01 Read-only. No write path to ChatGPT exists in this version.
+- N-01 Reads by default. The only write paths are `send_message` and
+  `create_chat`, requiring explicit confirmation and one message per call.
 - N-02 Non-invasive. Own tabs only, always closed; never touches the user's
   tabs; never closes the browser.
 - N-03 No credentials. No cookies, tokens, headers, or profile files read,
@@ -235,12 +237,24 @@ CREATE TABLE fetch_log (
 );
 
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+
+CREATE TABLE send_log (
+  id       INTEGER PRIMARY KEY,
+  chat_id  TEXT NOT NULL,
+  sent_at  TEXT NOT NULL,
+  status   TEXT NOT NULL CHECK (status IN ('sent', 'unknown')),
+  detail   TEXT
+);
 ```
 
 Changes from the previous schema: `stale`, `last_seen_at`, `sidebar_rank`, and
 `sync_runs` are dropped; `fetch_log` records individual fetches. This is a
-schema change, so the version goes to 2 with a migration that discards old
+schema change, so the version went to 2 with a migration that discards old
 backfilled data (the current local store is already cleared).
+
+Schema 3 adds `send_log`, metadata only: chat ID, time, status, and an error
+type. Message text lives only in `turns`, written by the normal read/refresh
+path after a successful send.
 
 ## 8. Interfaces
 
@@ -251,6 +265,8 @@ chatgpt-bridge status
 chatgpt-bridge doctor
 chatgpt-bridge chats [--stored] [--limit N] [--json]
 chatgpt-bridge fetch <url|id|title> [--refresh] [--json]
+chatgpt-bridge send <url|id|title> "<message>" [--yes] [--dry-run] [--json]
+chatgpt-bridge new "<message>" [--yes] [--dry-run] [--json]
 chatgpt-bridge show <url|id|title> [--format text|md|json]
 chatgpt-bridge search <query> [--chat TARGET] [--limit N] [--json]
 chatgpt-bridge forget <url|id|title> [--yes]
@@ -261,7 +277,8 @@ chatgpt-bridge version
 ```
 
 Exit codes: `0` ok, `1` error, `2` usage, `3` browser unreachable, `4` parse
-drift, `5` not found, `6` login required, `7` ambiguous target, `8` store error.
+drift, `5` not found, `6` login required, `7` ambiguous target, `8` store error,
+`9` a fetch is already running, `10` sent but no complete reply observed.
 
 `forget` and `reset` prompt unless `--yes`.
 
@@ -276,6 +293,12 @@ drift, `5` not found, `6` login required, `7` ambiguous target, `8` store error.
 | `get_chat` | `target`, `format?` | stored conversation only; error explains `fetch_chat` |
 | `search_chats` | `query`, `chat?`, `limit?` | hits with snippets over stored chats |
 | `forget_chat` | `target`, `confirm` | removal result; requires `confirm=true` |
+| `send_message` | `target`, `message`, `confirm`, `expected_chat_id?` | dry run by default; sending requires `confirm=true` and the matching `expected_chat_id` |
+| `create_chat` | `message`, `confirm` | dry run by default; sending requires `confirm=true` |
+
+`send_message` and `create_chat` are the only write tools. Their descriptions
+say so, and they never send on the first call: a dry run returns the resolved
+chat ID (for `send_message`) or a message preview.
 
 Every tool returning chat text wraps it:
 
@@ -301,6 +324,10 @@ retrieve a chat, and to use the returned plan or content as input for the work.
   message count stabilises.
 - **Validation:** messages must alternate user/assistant and be non-empty;
   otherwise `ParseDriftError`, and nothing is stored.
+- **Writing:** composer is `div[contenteditable="true"][role="textbox"]`; the
+  send control is `button[aria-label="Send"]` and only appears once text is
+  present. A reply is complete when the stop control is gone and the last
+  assistant turn's text has been stable for three polls.
 - All selectors and labels live in `adapters/chatgpt.py`.
 
 ## 10. Browser layer
@@ -346,6 +373,9 @@ Environment: `CHATGPT_BRIDGE_CDP_URL`, `CHATGPT_BRIDGE_DATA_DIR`,
 | Chat not available | Exit 5, nothing stored |
 | Selector drift | Exit 4 with the chat ID and what was expected |
 | Chat not stored (`show`/`get_chat`) | Exit 5, tell the caller to fetch it |
+| Composer already has a draft | Refuse before typing; nothing sent |
+| Reply does not finish in time | Exit 10, outcome `unknown`; never retry |
+| `expected_chat_id` does not match | Refuse before typing; nothing sent |
 
 ## 13. Testing
 
@@ -356,6 +386,9 @@ Environment: `CHATGPT_BRIDGE_CDP_URL`, `CHATGPT_BRIDGE_DATA_DIR`,
   parse failure stores nothing, browser failure stores nothing.
 - **Live (`pytest -m live`):** real CDP browser, read-only. Fetch one named chat,
   confirm code blocks and tables survive, confirm `doctor` passes.
+- **Live send (`pytest -m live_send`):** creates a chat, sends a follow-up,
+  reads it back and searches it. Requires `CHATGPT_BRIDGE_ALLOW_SEND=1`; never
+  runs by default or in CI.
 - Fixtures sanitised; no real chat content committed.
 - Gates: `ruff`, `mypy --strict` over the whole package, and `pytest`.
 - CI runs the gates on Python 3.12–3.14 and smoke-tests the built wheel.
@@ -383,9 +416,9 @@ Environment: `CHATGPT_BRIDGE_CDP_URL`, `CHATGPT_BRIDGE_DATA_DIR`,
 
 ## 16. Milestones
 
-Status as of 2026-10-31: milestones 1–12 are implemented and verified; 0.2.1
-adds hardening and CI. The session-level state lives in `docs/HANDOFF.md`; this
-list records scope.
+Status as of 2026-11-01: milestones 1–14 are implemented and verified; 0.2.1
+added hardening and CI, and 0.3.0 adds the confirmed write path. The
+session-level state lives in `docs/HANDOFF.md`; this list records scope.
 
 1. **Scaffold** — repo, tooling, both entry points. ✅
 2. **Paths, config, logging** — `config --show`, log file. ✅
@@ -397,11 +430,16 @@ list records scope.
 8. **Fetch service** — store hit, refresh, transaction, fetch log. ✅
 9. **Query and CLI** — `chats`, `fetch`, `show`, `search`, `forget`, `status`,
    `doctor`, `export-raw`, `reset`. ✅
-10. **MCP server** — seven tools, envelope, tool descriptions. ✅
+10. **MCP server** — nine tools, envelope, tool descriptions. ✅
 11. **Live acceptance** — fetch one named chat end to end; store hit without a
     browser; refresh reports changes; opt-in live tests pass. ✅
 12. **Docs and wiring** — README, CHANGELOG, `docs/HANDOFF.md`, AGENTS.md docs
     reference. OpenCode entry documented, not yet installed. ✅
+13. **Send path** — confirmed `send` to an existing chat, `new` chat with one
+    message, reply wait, `unknown` outcome, schema v3 send log. ✅ 0.3.0
+14. **Live acceptance** — create, send, read, refresh, search, export, forget,
+    reset, and all nine MCP tools exercised against the real browser; sanitized
+    evidence in `docs/ACCEPTANCE.md`. ✅ 0.3.0
 
 Deviations recorded during the rework:
 
@@ -413,9 +451,8 @@ Deviations recorded during the rework:
 
 ## 17. Future
 
-- `send_message` with confirmation. Proposed in `docs/SEND-MESSAGE-DESIGN.md`;
-  not implemented, pending the approval checklist.
-- Create a new chat.
 - Optional bulk discovery, if you ever want it, behind an explicit flag and off
   by default.
 - Several targets in one `fetch` call (`fetch a b c`), still undecided.
+- Publishing to PyPI, if install-from-source is not enough.
+- Edit/delete/rename and branch switching remain deliberately out of scope.

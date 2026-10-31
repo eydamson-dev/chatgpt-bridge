@@ -30,11 +30,11 @@ def seed(
     )
 
 
-def test_connect_creates_v2_schema(tmp_path: Path) -> None:
+def test_connect_creates_current_schema(tmp_path: Path) -> None:
     conn = store.connect(tmp_path / "bridge.db")
-    assert store.schema_version(conn) == store.SCHEMA_VERSION == 2
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 3
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"chats", "turns", "attachments", "fetch_log", "meta"} <= tables
+    assert {"chats", "turns", "attachments", "fetch_log", "send_log", "meta"} <= tables
     assert "sync_runs" not in tables
     conn.close()
 
@@ -60,18 +60,34 @@ def test_newer_schema_refused(tmp_path: Path) -> None:
 
 
 def test_v1_database_is_migrated(tmp_path: Path) -> None:
-    """A schema-1 database (the old backfill model) is rebuilt as schema 2."""
+    """A schema-1 database (the old backfill model) is rebuilt as the current schema."""
     path = tmp_path / "bridge.db"
     conn = store.connect(path)
     conn.execute("PRAGMA user_version = 1")
     conn.close()
 
     conn = store.connect(path)
-    assert store.schema_version(conn) == 2
+    assert store.schema_version(conn) == store.SCHEMA_VERSION
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "sync_runs" not in tables
+    assert "send_log" in tables
     conn.close()
     assert (tmp_path / "bridge.db.bak-1").exists()
+
+
+def test_v2_database_gains_send_log(tmp_path: Path) -> None:
+    path = tmp_path / "bridge.db"
+    conn = store.connect(path)
+    conn.execute("DROP TABLE send_log")
+    conn.execute("PRAGMA user_version = 2")
+    conn.close()
+
+    conn = store.connect(path)
+    assert store.schema_version(conn) == 3
+    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "send_log" in tables
+    conn.close()
+    assert (tmp_path / "bridge.db.bak-2").exists()
 
 
 def test_drop_migration_backup(tmp_path: Path) -> None:
@@ -187,6 +203,15 @@ def test_forget_chat(conn) -> None:
     assert store.forget_chat(conn, "c1") is True
     assert store.forget_chat(conn, "c1") is False
     assert store.counts(conn).chats == 0
+
+
+def test_send_log_records_and_clears(conn) -> None:
+    store.record_send(conn, "c1", "sent", sent_at="2026-01-01T00:00:00+00:00")
+    entry = store.last_send(conn)
+    assert entry is not None
+    assert (entry.chat_id, entry.status, entry.detail) == ("c1", "sent", None)
+    store.delete_all(conn)
+    assert store.last_send(conn) is None
 
 
 def test_fetch_log_records_and_reports_last(conn) -> None:

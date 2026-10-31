@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from chatgpt_bridge import paths
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_PARSE_VERSION = 1
 Role = Literal["user", "assistant"]
 FetchStatus = Literal["ok", "unchanged", "failed"]
@@ -96,12 +96,21 @@ class Counts:
     chats: int
     turns: int
     last_fetch: str | None
+    last_send: str | None = None
 
 
 @dataclass(frozen=True)
 class FetchLogEntry:
     chat_id: str
     fetched_at: str
+    status: str
+    detail: str | None
+
+
+@dataclass(frozen=True)
+class SendLogEntry:
+    chat_id: str
+    sent_at: str
     status: str
     detail: str | None
 
@@ -307,6 +316,33 @@ def last_fetch(conn: sqlite3.Connection) -> FetchLogEntry | None:
     )
 
 
+def record_send(
+    conn: sqlite3.Connection,
+    chat_id: str,
+    status: Literal["sent", "unknown"],
+    detail: str | None = None,
+    sent_at: str | None = None,
+) -> None:
+    conn.execute(
+        "INSERT INTO send_log(chat_id, sent_at, status, detail) VALUES (?, ?, ?, ?)",
+        (chat_id, sent_at or utc_now(), status, detail),
+    )
+
+
+def last_send(conn: sqlite3.Connection) -> SendLogEntry | None:
+    row = conn.execute(
+        "SELECT chat_id, sent_at, status, detail FROM send_log ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    return SendLogEntry(
+        chat_id=str(row["chat_id"]),
+        sent_at=str(row["sent_at"]),
+        status=str(row["status"]),
+        detail=row["detail"],
+    )
+
+
 # ---------------------------------------------------------------- reads
 
 
@@ -503,10 +539,12 @@ def counts(conn: sqlite3.Connection) -> Counts:
     chats = conn.execute("SELECT COUNT(*) FROM chats").fetchone()[0]
     turns = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
     entry = last_fetch(conn)
+    sent = last_send(conn)
     return Counts(
         chats=int(chats or 0),
         turns=int(turns or 0),
         last_fetch=entry.fetched_at if entry else None,
+        last_send=sent.sent_at if sent else None,
     )
 
 
@@ -516,6 +554,7 @@ def delete_all(conn: sqlite3.Connection) -> None:
         conn.execute("DELETE FROM turns")
         conn.execute("DELETE FROM chats")
         conn.execute("DELETE FROM fetch_log")
+        conn.execute("DELETE FROM send_log")
         conn.execute("DELETE FROM meta")
 
 
