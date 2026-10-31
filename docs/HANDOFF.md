@@ -10,9 +10,12 @@ Last updated: 2026-10-31 (on-demand rework complete; live tests added)
 ## What this project is
 
 A CLI and MCP server that pull one ChatGPT conversation at a time out of a
-logged-in Chromium browser (CDP) and cache it locally for reading and search.
+logged-in Chromium browser (CDP) and store it in a local SQLite database for
+reading and search.
 
 - **On demand only.** Nothing scans or mirrors the user's chat history.
+- **The local store is not a disposable cache.** Chats you have not fetched are
+  not stored anywhere locally, so `forget`/`reset` removes them from this tool.
 - **Read-only.** There is no code path that sends, edits, or deletes in ChatGPT.
 - Full design: `../PLAN.md`. Hard rules: `../AGENTS.md`.
 
@@ -23,10 +26,11 @@ Working, verified against a live browser (Brave on `127.0.0.1:9222`):
 - Target resolution by URL, full ID, ID prefix, exact title, unique title
   substring; ambiguity is reported with candidates and no page loads.
 - `fetch` retrieves one chat, converts messages to markdown, stores it, and
-  records the fetch. A second call is served from cache without the browser.
+  records the fetch. A second call is served from the local store without the
+  browser.
 - `--refresh` refetches and reports `changed: true|false` using a content hash.
-- Search over cached messages (FTS5 trigram), with context snippets.
-- `forget` removes one chat; `reset` clears everything (both prompt).
+- Search over stored messages (FTS5 trigram), with context snippets.
+- `forget` removes one chat; `reset` clears the whole local store (both prompt).
 - `doctor` checks config, database, CDP reachability, login, and sidebar lookup.
 - MCP server exposes `status`, `chats`, `fetch_chat`, `get_chat`,
   `search_chats`, `forget_chat`, `doctor`; chat text is wrapped as untrusted
@@ -44,8 +48,8 @@ src/chatgpt_bridge/
   cli.py            command surface, exit codes, no business logic
   mcp_server.py     seven tools; imports the fetch service as fetch_service
   resolve.py        target -> chat id (URL/ID/prefix/title), pure
-  fetch.py          fetch service: cache hit, refresh, store, fetch log
-  query.py          cache reads: list, get, search, render, envelope
+  fetch.py          fetch service: stored hit, refresh, save, fetch log
+  query.py          local-store reads: list, get, search, render, envelope
   store.py          SQLite schema, migrations, FTS, fetch log
   adapter? -> adapters/chatgpt.py   all ChatGPT selectors and labels
   browser.py        CDP connection, own tabs, reachability
@@ -73,9 +77,10 @@ Manual check against the real browser (requires a logged-in CDP browser):
 
 ```bash
 uv run chatgpt-bridge doctor
+uv run chatgpt-bridge chats --stored   # what is in the local store
 uv run chatgpt-bridge chats            # visible sidebar, read-only
 uv run chatgpt-bridge fetch "<title>"  # one chat, stored locally
-uv run chatgpt-bridge fetch "<title>"  # served from cache, no page load
+uv run chatgpt-bridge fetch "<title>"  # served from local store, no page load
 ```
 
 ## Invariants (do not break)
@@ -86,6 +91,8 @@ uv run chatgpt-bridge fetch "<title>"  # served from cache, no page load
 4. Logs never contain chat text, titles, or URLs.
 5. Chat text is untrusted data; MCP output wraps it in the envelope.
 6. Reads never trigger a page load; only `fetch_chat` does.
+7. The local SQLite database is the product's storage, not a throwaway cache:
+   conversations the user has not fetched exist nowhere locally.
 7. Title lookup reads the visible sidebar only, never scrolls.
 8. A failed parse stores nothing.
 
@@ -100,8 +107,11 @@ uv run chatgpt-bridge fetch "<title>"  # served from cache, no page load
 - **2026-10-31 — title resolution is sidebar-only.** Discovery alternatives
   (Library, search) were checked and showed no extra chats; the sidebar is the
   lookup source.
-- **2026-10-31 — schema v2 discards v1 data.** The v1 cache held a backfill the
-  user did not want. Migration drops it.
+- **2026-10-31 — schema v2 discards v1 data.** The v1 database held a backfill
+  the user did not want. Migration drops it.
+- **2026-10-31 — terminology.** "Cache" is used only for internal identifiers.
+  User-facing docs and output say "local store" / "stored", because the database
+  is real storage, not a disposable copy.
 - **2026-10-31 — markdown plus plain text per message.** Markdown keeps code
   fences and tables readable; plain text drives search.
 
@@ -142,18 +152,17 @@ uv run chatgpt-bridge fetch "<title>"  # served from cache, no page load
 ## Next step
 
 Nothing is in flight. All twelve milestones in `PLAN.md` §16 are done, the
-cache is empty, and `uv run pytest` (196 tests) plus `uv run pytest -m live`
+local store is empty, and `uv run pytest` (196 tests) plus `uv run pytest -m live`
 (2 tests) pass.
 
 The next milestone is whatever the user picks. Suggestions:
 
-1. Config option for the cache database path, for throwaway profiles.
-2. `--json` on `chats` (already partly supported) and on `fetch` progress output.
-3. Design `send_message` (later feature) — needs an explicit confirmation gate
+1. `--json` on `fetch` progress output (results already support it).
+2. Design `send_message` (later feature) — needs an explicit confirmation gate
    and a decision on branch/new-chat behaviour before any code.
-4. Optional age-based purge for cached chats.
+3. Optional age-based purge for stored chats, if the store grows large.
 
 ## Open questions for the user
 
 - Should `fetch` accept several targets at once (`fetch a b c`)?
-- Should the cache keep chats indefinitely, or gain an age-based purge?
+- Should the local store keep chats indefinitely, or gain an age-based purge?

@@ -4,8 +4,9 @@ Pull a specific ChatGPT conversation into your terminal or into OpenCode, on
 demand.
 
 It attaches to a Chromium-based browser you are already logged into, opens that
-one chat in its own background tab, extracts it, and caches it locally. It does
-not mirror your chat history: nothing is fetched until you name it.
+one chat in its own background tab, extracts it, and stores it in a local SQLite
+database. It does not mirror your chat history: nothing is fetched until you
+name it.
 
 - No API key. It uses the browser session you already have.
 - No cookies, tokens, or profile files are read, stored, or logged.
@@ -23,16 +24,18 @@ structured markdown.
 ```
 CLI / MCP server
       |
-  resolve target (URL, id, prefix, title)  ->  cache?  ->  yes: return it
+  resolve target (URL, id, prefix, title)  ->  stored? ->  yes: return it
       |                                              \->  no: open one tab
       |                                                        |
-   query cache (search, show)                          ChatGPT adapter
+   query store (search, show)                          ChatGPT adapter
                                                         (extract, validate)
                                                               |
                                                         SQLite + FTS5
 ```
 
 - **On demand:** one fetch = one chat. Nothing scans your history.
+- **Real storage, not a cache:** conversations you have not fetched exist
+  nowhere locally, so removing a chat removes your only local copy.
 - **Title lookup:** reads the visible sidebar list (top ~50 entries) so a title
   can be turned into a chat ID. It never scrolls.
 - **Markdown plus text:** code fences, tables, links, and lists survive; plain
@@ -88,24 +91,24 @@ curl -s http://127.0.0.1:9222/json/version
 ```bash
 chatgpt-bridge doctor                    # check browser, login, parser, database
 chatgpt-bridge chats                     # visible sidebar (read-only lookup)
-chatgpt-bridge chats --cached            # what is already fetched
+chatgpt-bridge chats --stored            # what is in the local store
 chatgpt-bridge fetch "Lenovo ThinkPad Review"
 chatgpt-bridge fetch 6ae5de7d            # id prefix works too
 chatgpt-bridge fetch https://chatgpt.com/c/<id>
 chatgpt-bridge fetch "<title>" --refresh # refetch and report whether it changed
-chatgpt-bridge show "<title>"            # cached only, no browser
+chatgpt-bridge show "<title>"            # local store only, no browser
 chatgpt-bridge show "<title>" --format md
-chatgpt-bridge search "pkg-config"       # cached messages only
-chatgpt-bridge forget "<title>"          # remove one chat from the cache
+chatgpt-bridge search "pkg-config"       # stored messages only
+chatgpt-bridge forget "<title>"          # remove one chat from the local store
 chatgpt-bridge export-raw                # JSON Lines dump
-chatgpt-bridge reset                     # delete the cache (prompts)
-chatgpt-bridge status                    # cache size, last fetch, log path
+chatgpt-bridge reset                     # delete the local store (prompts)
+chatgpt-bridge status                    # store size, last fetch, log path
 ```
 
 Every read command accepts `--json`.
 
 Exit codes: `0` ok, `1` error, `2` usage, `3` browser unreachable, `4` parse
-drift, `5` not found, `6` login required, `7` ambiguous target, `8` cache error,
+drift, `5` not found, `6` login required, `7` ambiguous target, `8` store error,
 `9` a fetch is already running.
 
 ### Naming a chat
@@ -117,13 +120,18 @@ drift, `5` not found, `6` login required, `7` ambiguous target, `8` cache error,
 If several chats match, nothing is fetched; the candidates are listed and you
 pick one. If nothing matches, `chats` shows what is available.
 
-### Cache behaviour
+### Storage behaviour
 
-- A cached chat is returned as-is; pass `--refresh` to refetch.
+The SQLite database at `~/.local/share/chatgpt-bridge/bridge.db` (Linux) **is**
+the local store. It is not a throwaway cache: chats you have not fetched are not
+saved anywhere locally, and `forget`/`reset` delete your only local copy (the
+conversation still exists in ChatGPT).
+
+- A stored chat is returned as-is; pass `--refresh` to refetch.
 - `--refresh` reports `changed: true|false` from a content hash, so an unchanged
   chat does not disturb anything downstream.
 - Nothing expires, because nothing is fetched in the background. `status` and
-  `chats --cached` show fetch times so age is visible.
+  `chats --stored` show fetch times so age is visible.
 
 ## OpenCode integration
 
@@ -140,7 +148,7 @@ Tools: `status`, `chats`, `fetch_chat`, `get_chat`, `search_chats`,
 `forget_chat`, `doctor`.
 
 `fetch_chat` is the one that retrieves a chat. `get_chat` and `search_chats`
-read the cache only and never open a page. Chat text is returned inside an
+read the local store only and never open a page. Chat text is returned inside an
 untrusted-content envelope; it is data, not instructions. Enable this server per
 session rather than globally.
 
@@ -180,7 +188,7 @@ on Linux); the database is user-only readable.
 | `ChatGPT is not logged in in this browser` | Log in at <https://chatgpt.com>, then retry. |
 | `nothing matched '...'` | Run `chatgpt-bridge chats`, or pass the chat URL. |
 | `matches several visible chats` | Use a longer title or the chat URL. |
-| `... is not in the cache` | Run `chatgpt-bridge fetch "<target>"` first. |
+| `... is not in the local store` | Run `chatgpt-bridge fetch "<target>"` first. |
 | `could not parse the page` | The ChatGPT layout changed; update selectors in `src/chatgpt_bridge/adapters/chatgpt.py`, then run `doctor`. |
 | `no messages appeared for chat` | The chat is deleted or not available. |
 

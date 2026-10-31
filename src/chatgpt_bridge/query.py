@@ -102,7 +102,7 @@ def forget(target: str, db_path: Path | None = None) -> str:
 
 
 def _missing_message(target: str) -> str:
-    return f'{target!r} is not in the cache. Fetch it first: chatgpt-bridge fetch "{target}"'
+    return f'{target!r} is not in the local store. Fetch it first: chatgpt-bridge fetch "{target}"'
 
 
 def _ambiguous_message(message: str, candidates: list[tuple[str, str]]) -> str:

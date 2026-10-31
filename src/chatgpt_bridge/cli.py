@@ -44,38 +44,38 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     sub.add_parser("version", help="show app version")
-    sub.add_parser("status", help="cache state and last fetch")
+    sub.add_parser("status", help="local store size and last fetch")
     sub.add_parser("doctor", help="check browser, login, parser, and database")
 
     chats = sub.add_parser("chats", help="list chats")
-    chats.add_argument("--cached", action="store_true", help="only chats already fetched")
+    chats.add_argument("--stored", action="store_true", help="only chats already fetched")
     chats.add_argument("--limit", type=int)
 
-    fetch = sub.add_parser("fetch", help="fetch one chat into the cache")
+    fetch = sub.add_parser("fetch", help="fetch one chat into the local store")
     fetch.add_argument("target", help="chat URL, id, id prefix, or title")
-    fetch.add_argument("--refresh", action="store_true", help="refetch even if cached")
+    fetch.add_argument("--refresh", action="store_true", help="refetch even if already stored")
     fetch.add_argument("--format", choices=["text", "md", "json"], default="md")
 
-    show = sub.add_parser("show", help="print a cached chat")
+    show = sub.add_parser("show", help="print a stored chat")
     show.add_argument("target")
     show.add_argument("--format", choices=["text", "md", "json"], default="text")
 
-    find = sub.add_parser("search", help="search cached messages")
+    find = sub.add_parser("search", help="search stored messages")
     find.add_argument("query")
-    find.add_argument("--chat", help="restrict to one cached chat")
+    find.add_argument("--chat", help="restrict to one stored chat")
     find.add_argument("--limit", type=int)
 
-    forget = sub.add_parser("forget", help="remove one chat from the cache")
+    forget = sub.add_parser("forget", help="remove one chat from the local store")
     forget.add_argument("target")
     forget.add_argument("--yes", action="store_true", help="do not prompt")
 
     cfg = sub.add_parser("config", help="show effective settings")
     cfg.add_argument("--show", action="store_true")
 
-    export = sub.add_parser("export-raw", help="dump the cache as JSON Lines")
+    export = sub.add_parser("export-raw", help="dump the local store as JSON Lines")
     export.add_argument("--out", type=Path, metavar="FILE")
 
-    reset = sub.add_parser("reset", help="delete every cached chat")
+    reset = sub.add_parser("reset", help="delete every stored chat")
     reset.add_argument("--yes", action="store_true", help="do not prompt")
 
     sync = sub.add_parser("sync", help=argparse.SUPPRESS)
@@ -214,7 +214,7 @@ def _cmd_status(args: argparse.Namespace, resolved: config.Resolved) -> int:
     text = "\n".join(
         [
             f"database     {payload['db_path']}",
-            f"cached chats {counts.chats} ({counts.turns} messages)",
+            f"stored chats {counts.chats} ({counts.turns} messages)",
             f"fetching     {'yes' if payload['fetch_running'] else 'no'}",
             f"last fetch   {counts.last_fetch or 'never'}",
             f"log file     {payload['log_file']}",
@@ -237,7 +237,7 @@ def _cmd_doctor(args: argparse.Namespace, resolved: config.Resolved) -> int:
 
 def _cmd_chats(args: argparse.Namespace, resolved: config.Resolved) -> int:
     settings = resolved.settings
-    if args.cached:
+    if args.stored:
         rows = query.list_cached(limit=args.limit)
         payload = [
             {
@@ -254,7 +254,7 @@ def _cmd_chats(args: argparse.Namespace, resolved: config.Resolved) -> int:
             f"{row.title[:60]}"
             for row in rows
         )
-        _emit(args, payload, text or "no cached chats yet; use: chatgpt-bridge fetch <target>")
+        _emit(args, payload, text or "no stored chats yet; use: chatgpt-bridge fetch <target>")
         return EXIT_OK
 
     with Browser(settings.cdp_url) as browser:
@@ -306,7 +306,7 @@ def _cmd_fetch(args: argparse.Namespace, resolved: config.Resolved) -> int:
 
 
 class _Session:
-    """Closes the browser and cleans up cached chats when the fetch finishes."""
+    """Pairs the browser with the adapter so a fetch can close both."""
 
     def __init__(self, browser: Browser, adapter: ChatGPTAdapter) -> None:
         self.browser = browser
@@ -347,8 +347,8 @@ def _cmd_search(args: argparse.Namespace, resolved: config.Resolved) -> int:
     )
     if not hits:
         text = (
-            "no matches in cached chats "
-            f"({query.counts().chats} cached). Fetch more with: chatgpt-bridge fetch <target>"
+            "no matches in stored chats "
+            f"({query.counts().chats} stored). Fetch more with: chatgpt-bridge fetch <target>"
         )
     _emit(args, payload, text)
     return EXIT_OK
@@ -357,9 +357,9 @@ def _cmd_search(args: argparse.Namespace, resolved: config.Resolved) -> int:
 def _cmd_forget(args: argparse.Namespace, resolved: config.Resolved) -> int:
     if not args.yes:
         if not sys.stdin.isatty():
-            _err("refusing to remove a cached chat without --yes when stdin is not a terminal")
+            _err("refusing to remove a stored chat without --yes when stdin is not a terminal")
             return EXIT_USAGE
-        if input(f"Remove {args.target!r} from the cache? [y/N] ").strip().lower() not in {
+        if input(f"Remove {args.target!r} from the local store? [y/N] ").strip().lower() not in {
             "y",
             "yes",
         }:
@@ -369,7 +369,7 @@ def _cmd_forget(args: argparse.Namespace, resolved: config.Resolved) -> int:
     if args.json:
         print(json.dumps({"forgotten": chat_id}))
     else:
-        print(f"removed {chat_id} from the cache")
+        print(f"removed {chat_id} from the local store")
     return EXIT_OK
 
 
@@ -390,14 +390,14 @@ def _cmd_reset(args: argparse.Namespace, resolved: config.Resolved) -> int:
 
     if not args.yes:
         if not sys.stdin.isatty():
-            _err("refusing to delete the cache without --yes when stdin is not a terminal")
+            _err("refusing to delete the local store without --yes when stdin is not a terminal")
             return EXIT_USAGE
-        answer = input("Delete the local chat cache? [y/N] ").strip().lower()
+        answer = input("Delete the local chat store? [y/N] ").strip().lower()
         if answer not in {"y", "yes"}:
             print("cancelled")
             return EXIT_OK
     maintenance.reset()
-    print("cache deleted")
+    print("local store deleted")
     return EXIT_OK
 
 

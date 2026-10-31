@@ -60,11 +60,11 @@ def test_status_json(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_status_text(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["status"]) == EXIT_OK
-    assert "cached chats 2" in capsys.readouterr().out
+    assert "stored chats 2" in capsys.readouterr().out
 
 
 def test_chats_cached(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["--json", "chats", "--cached"]) == EXIT_OK
+    assert main(["--json", "chats", "--stored"]) == EXIT_OK
     rows = json.loads(capsys.readouterr().out)
     assert {r["title"] for r in rows} == {"Fedora notes", "Lenovo ThinkPad Review"}
 
@@ -73,8 +73,8 @@ def test_chats_cached_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("CHATGPT_BRIDGE_DATA_DIR", str(tmp_path / "data"))
-    assert main(["chats", "--cached"]) == EXIT_OK
-    assert "no cached chats" in capsys.readouterr().out
+    assert main(["chats", "--stored"]) == EXIT_OK
+    assert "no stored chats" in capsys.readouterr().out
 
 
 def test_show_text_by_prefix(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -104,7 +104,7 @@ def test_show_json(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
 def test_show_missing_tells_you_to_fetch(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["show", "not cached anywhere"]) == EXIT_NOT_FOUND
     err = capsys.readouterr().err
-    assert "not in the cache" in err
+    assert "not in the local store" in err
     assert "chatgpt-bridge fetch" in err
 
 
@@ -122,7 +122,7 @@ def test_search_no_matches_mentions_cache_size(
 ) -> None:
     assert main(["search", "zzzzzz"]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "no matches in cached chats (2 cached)" in out
+    assert "no matches in stored chats (2 stored)" in out
 
 
 def test_search_scoped_to_chat(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -169,7 +169,7 @@ def test_export_raw(seeded: Path, tmp_path: Path, capsys: pytest.CaptureFixture[
 
 def test_reset_with_yes(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["reset", "--yes"]) == EXIT_OK
-    assert "cache deleted" in capsys.readouterr().out
+    assert "local store deleted" in capsys.readouterr().out
 
 
 def test_config_show(capsys: pytest.CaptureFixture[str]) -> None:

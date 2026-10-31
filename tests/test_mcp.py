@@ -35,14 +35,14 @@ def seeded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def test_status_reports_cache(seeded: Path) -> None:
     payload = mcp_server.status()
-    assert payload["cached_chats"] == 1
+    assert payload["stored_chats"] == 1
     assert payload["messages"] == 2
     assert payload["last_fetch_status"] == "ok"
 
 
-def test_chats_defaults_to_cache_without_browser(seeded: Path) -> None:
+def test_chats_defaults_to_local_store_without_browser(seeded: Path) -> None:
     payload = mcp_server.chats()
-    assert payload["source"] == "cache"
+    assert payload["source"] == "local_store"
     assert payload["chats"][0]["id"] == UUID
     assert payload["chats"][0]["messages"] == 2
 
@@ -67,7 +67,7 @@ def test_get_chat_missing_names_fetch_chat(seeded: Path) -> None:
 def test_search_wraps_and_reports_cache_size(seeded: Path) -> None:
     payload = mcp_server.search_chats("pkg-config")
     assert payload["trust"] == "untrusted_user_content"
-    assert payload["data"]["cached_chats"] == 1
+    assert payload["data"]["stored_chats"] == 1
     assert payload["data"]["hits"][0]["chat_id"] == UUID
 
 
@@ -85,7 +85,7 @@ def test_forget_requires_confirm(seeded: Path) -> None:
 def test_forget_removes_with_confirm(seeded: Path) -> None:
     payload = mcp_server.forget_chat("fedora", confirm=True)
     assert payload["ok"] is True
-    assert mcp_server.status()["cached_chats"] == 0
+    assert mcp_server.status()["stored_chats"] == 0
 
 
 def test_fetch_without_browser_raises(seeded: Path, monkeypatch: pytest.MonkeyPatch) -> None:
