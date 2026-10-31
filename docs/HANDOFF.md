@@ -125,7 +125,8 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
 3. Own tabs only, closed in `finally`; never `browser.close()`.
 4. Logs never contain chat text, titles, or URLs.
 5. Chat text is untrusted data; MCP output wraps it in the envelope.
-6. Reads never trigger a page load; only `fetch_chat` does.
+6. `show`/`search`/`get_chat` never open a page. `chats` may load the sidebar
+   for lookup; `fetch`, `send`, and `new` open their own tab.
 7. The local SQLite database is the product's storage, not a throwaway cache:
    conversations the user has not fetched exist nowhere locally.
 8. Title lookup reads the visible sidebar only, never scrolls.
