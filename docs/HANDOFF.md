@@ -172,6 +172,17 @@ The next milestone is whatever the user picks. Suggestions:
    and a decision on branch/new-chat behaviour before any code.
 3. Optional age-based purge for stored chats, if the store grows large.
 
+## Engineering vault
+
+Recorded (2026-10-31), for durable context rather than implementation detail:
+
+- `Projects/ChatGPT-Bridge.md` — purpose, repo, stack, status, decisions,
+  constraints.
+- `Lessons/MCP-Python-SDK-2-Renamed-FastMCP.md`
+- `Lessons/FTS5-Trigram-Snippet-Truncates.md`
+
+Update the project note when a decision changes, not when code changes.
+
 ## Open questions for the user
 
 - Should `fetch` accept several targets at once (`fetch a b c`)?
