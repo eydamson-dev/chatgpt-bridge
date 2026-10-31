@@ -5,7 +5,7 @@ not history. Update it at the end of every milestone: rewrite the "Current state
 and "Next step" sections, and append to "Decisions" and "Gotchas" only when
 something durable was learned.
 
-Last updated: 2026-10-31 (public repo, MIT license, rewritten author)
+Last updated: 2026-10-31 (0.2.1 hardening, CI, and the `send_message` design)
 
 ## What this project is
 
