@@ -5,7 +5,7 @@ not history. Update it at the end of every milestone: rewrite the "Current state
 and "Next step" sections, and append to "Decisions" and "Gotchas" only when
 something durable was learned.
 
-Last updated: 2026-10-31 (on-demand rework complete)
+Last updated: 2026-10-31 (on-demand rework complete; live tests added)
 
 ## What this project is
 
@@ -31,7 +31,8 @@ Working, verified against a live browser (Brave on `127.0.0.1:9222`):
 - MCP server exposes `status`, `chats`, `fetch_chat`, `get_chat`,
   `search_chats`, `forget_chat`, `doctor`; chat text is wrapped as untrusted
   content.
-- 196 tests pass; `ruff` and `mypy --strict` are clean.
+- 196 unit tests and 2 opt-in live tests pass; `ruff` and `mypy --strict` are
+  clean.
 
 Schema is **version 2**. Migration `002_on_demand.sql` rebuilds the tables and
 discards v1 backfill data; a v1 database migrates automatically.
@@ -140,14 +141,17 @@ uv run chatgpt-bridge fetch "<title>"  # served from cache, no page load
 
 ## Next step
 
-Nothing is in flight. The next milestone is whatever the user picks; suggestions:
+Nothing is in flight. All twelve milestones in `PLAN.md` §16 are done, the
+cache is empty, and `uv run pytest` (196 tests) plus `uv run pytest -m live`
+(2 tests) pass.
 
-1. `test_live.py` — opt-in live regression tests (currently the live path is
-   verified by hand only).
-2. Config option for the cache database path, for throwaway profiles.
-3. Optional `--format json` on `chats` for scripts.
-4. Design `send_message` (v2 feature) — needs an explicit confirmation gate and
-   a decision on branch/new-chat behaviour before any code.
+The next milestone is whatever the user picks. Suggestions:
+
+1. Config option for the cache database path, for throwaway profiles.
+2. `--json` on `chats` (already partly supported) and on `fetch` progress output.
+3. Design `send_message` (later feature) — needs an explicit confirmation gate
+   and a decision on branch/new-chat behaviour before any code.
+4. Optional age-based purge for cached chats.
 
 ## Open questions for the user
 
