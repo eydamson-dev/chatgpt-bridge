@@ -5,6 +5,7 @@ Selectors and labels live here so a page change is a one-file fix.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from dataclasses import dataclass, field
@@ -25,6 +26,8 @@ SECTIONS = {"pinned", "projects", "recents"}
 # --- selectors -------------------------------------------------------
 SIDEBAR_NAV = 'nav[aria-label="Chat history"]'
 CHAT_LINK = 'a[href^="/c/"]'
+SIDEBAR_CHAT_LINK = 'nav[aria-label="Chat history"] a[href^="/c/"]'
+SIDEBAR_LINK_TIMEOUT_MS = 10_000
 ROLE_HEADING = "h4[data-conversation-role]"
 TURN_WRAPPER = "[data-turn-key]"
 SIDEBAR_SCROLLABLE_MAX_STEPS = 40
@@ -174,13 +177,21 @@ class ChatGPTAdapter:
         self.page_delay_s = page_delay_s
 
     # -- discovery --------------------------------------------------
-    def list_chats(self, scroll: bool = True) -> list[ChatRef]:
+    def list_chats(self, scroll: bool = False, limit: int | None = None) -> list[ChatRef]:
+        """Read the visible sidebar.
+
+        Scrolling is off by default: this is a title lookup, not a history backfill.
+        """
         with self.browser.open_tab(BASE_URL) as page:
             page.wait_for_selector(SIDEBAR_NAV, timeout=LOAD_TIMEOUT_MS)
+            # The nav renders before its chat links hydrate.
+            with contextlib.suppress(Exception):
+                page.wait_for_selector(SIDEBAR_CHAT_LINK, timeout=SIDEBAR_LINK_TIMEOUT_MS)
             if scroll:
                 self._scroll_sidebar(page)
             payload = page.evaluate(EXTRACT_SIDEBAR_JS)
-        return _parse_sidebar(payload)
+        refs = _parse_sidebar(payload)
+        return refs[:limit] if limit is not None else refs
 
     def _scroll_sidebar(self, page: Any) -> None:
         stable = 0
@@ -239,7 +250,7 @@ def _parse_sidebar(payload: dict[str, Any]) -> list[ChatRef]:
                 title=str(item.get("title") or item["id"]),
                 url=str(item.get("url") or chat_url(str(item["id"]))),
                 section=str(section) if section else None,
-                sidebar_rank=int(item.get("rank", 0)),
+                rank=int(item.get("rank", 0)),
             )
         )
     if not refs:

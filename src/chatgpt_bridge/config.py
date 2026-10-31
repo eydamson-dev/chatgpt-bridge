@@ -22,8 +22,7 @@ class Settings:
     cdp_url: str = "http://127.0.0.1:9222"
     min_delay_s: float = 2.0
     max_delay_s: float = 4.0
-    recent_window: int = 10
-    lock_timeout_s: float = 0.0
+    lookup_limit: int = 50
     log_level: str = "info"
     data_dir: Path = field(default_factory=paths.data_dir)
     config_file: Path = field(default_factory=paths.config_file)
@@ -34,8 +33,7 @@ _FILE_KEYS: dict[tuple[str, str], str] = {
     ("browser", "cdp_url"): "cdp_url",
     ("pacing", "min_delay_s"): "min_delay_s",
     ("pacing", "max_delay_s"): "max_delay_s",
-    ("sync", "recent_window"): "recent_window",
-    ("sync", "lock_timeout_s"): "lock_timeout_s",
+    ("lookup", "limit"): "lookup_limit",
     ("logging", "level"): "log_level",
 }
 
@@ -134,9 +132,7 @@ def _validate(s: Settings) -> None:
         raise ConfigError(f"cdp_url must start with http:// or https:// (got {s.cdp_url!r})")
     if s.min_delay_s < 0 or s.max_delay_s < s.min_delay_s:
         raise ConfigError("pacing requires 0 <= min_delay_s <= max_delay_s")
-    if s.recent_window < 1:
-        raise ConfigError("recent_window must be at least 1")
-    if s.lock_timeout_s < 0:
-        raise ConfigError("lock_timeout_s must be 0 or greater")
+    if s.lookup_limit < 1:
+        raise ConfigError("lookup.limit must be at least 1")
     if s.log_level not in LOG_LEVELS:
         raise ConfigError(f"logging.level must be one of {', '.join(LOG_LEVELS)}")

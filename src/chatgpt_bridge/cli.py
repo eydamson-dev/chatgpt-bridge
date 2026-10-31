@@ -8,12 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from chatgpt_bridge import __version__, config, paths, query, store
-from chatgpt_bridge.adapters.chatgpt import ChatGPTAdapter, LoginRequired, chat_id_from_url
+from chatgpt_bridge.adapters.chatgpt import ChatGPTAdapter, ChatNotFound, LoginRequired
 from chatgpt_bridge.browser import Browser, BrowserError
+from chatgpt_bridge.fetch import fetch_chat
 from chatgpt_bridge.lock import LockBusy, is_locked, sync_lock
 from chatgpt_bridge.logging_setup import get_logger, log_file, setup_logging
 from chatgpt_bridge.parse import ParseDriftError
-from chatgpt_bridge.sync import SyncOptions, run_sync
+from chatgpt_bridge.resolve import AmbiguousTarget, TargetNotFound
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -22,8 +23,9 @@ EXIT_BROWSER = 3
 EXIT_DRIFT = 4
 EXIT_NOT_FOUND = 5
 EXIT_LOGIN = 6
-EXIT_LOCKED = 7
+EXIT_AMBIGUOUS = 7
 EXIT_CACHE = 8
+EXIT_LOCKED = 9
 
 log = get_logger("cli")
 
@@ -31,7 +33,7 @@ log = get_logger("cli")
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="chatgpt-bridge",
-        description="Read and search your ChatGPT web conversations.",
+        description="Read your ChatGPT web conversations on demand, through a logged-in browser.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--config", type=Path, metavar="FILE", help="config file to use")
@@ -42,30 +44,30 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     sub.add_parser("version", help="show app version")
-    sub.add_parser("status", help="browser, cache, and last sync")
+    sub.add_parser("status", help="cache state and last fetch")
     sub.add_parser("doctor", help="check browser, login, parser, and database")
 
-    sync = sub.add_parser("sync", help="fetch chats into the local cache")
-    sync.add_argument("--full", action="store_true", help="refetch every chat")
-    sync.add_argument("--limit", type=int, metavar="N", help="fetch at most N chats")
+    chats = sub.add_parser("chats", help="list chats")
+    chats.add_argument("--cached", action="store_true", help="only chats already fetched")
+    chats.add_argument("--limit", type=int)
 
-    listing = sub.add_parser("list", help="list cached chats")
-    listing.add_argument("--section", choices=["pinned", "projects", "recents"])
-    listing.add_argument("--stale", action="store_true", help="only chats missing from the sidebar")
-    listing.add_argument("--fresh", action="store_true", help="only chats still in the sidebar")
-    listing.add_argument("--unfetched", action="store_true", help="only chats without messages")
-    listing.add_argument("--limit", type=int)
+    fetch = sub.add_parser("fetch", help="fetch one chat into the cache")
+    fetch.add_argument("target", help="chat URL, id, id prefix, or title")
+    fetch.add_argument("--refresh", action="store_true", help="refetch even if cached")
+    fetch.add_argument("--format", choices=["text", "md", "json"], default="md")
 
-    show = sub.add_parser("show", help="print one cached chat")
-    show.add_argument("chat", help="chat id or URL")
+    show = sub.add_parser("show", help="print a cached chat")
+    show.add_argument("target")
     show.add_argument("--format", choices=["text", "md", "json"], default="text")
 
-    find = sub.add_parser("search", help="full-text search over cached messages")
+    find = sub.add_parser("search", help="search cached messages")
     find.add_argument("query")
-    find.add_argument("--chat", help="restrict to one chat")
-    find.add_argument("--section", choices=["pinned", "projects", "recents"])
-    find.add_argument("--since", metavar="DATE", help="only chats fetched on or after DATE")
+    find.add_argument("--chat", help="restrict to one cached chat")
     find.add_argument("--limit", type=int)
+
+    forget = sub.add_parser("forget", help="remove one chat from the cache")
+    forget.add_argument("target")
+    forget.add_argument("--yes", action="store_true", help="do not prompt")
 
     cfg = sub.add_parser("config", help="show effective settings")
     cfg.add_argument("--show", action="store_true")
@@ -73,8 +75,13 @@ def build_parser() -> argparse.ArgumentParser:
     export = sub.add_parser("export-raw", help="dump the cache as JSON Lines")
     export.add_argument("--out", type=Path, metavar="FILE")
 
-    reset = sub.add_parser("reset", help="delete the local cache")
+    reset = sub.add_parser("reset", help="delete every cached chat")
     reset.add_argument("--yes", action="store_true", help="do not prompt")
+
+    sync = sub.add_parser("sync", help=argparse.SUPPRESS)
+    sync.add_argument("--full", action="store_true", help=argparse.SUPPRESS)
+    sync.add_argument("--limit", type=int, help=argparse.SUPPRESS)
+    sync.add_argument("rest", nargs="*", help=argparse.SUPPRESS)
 
     return parser
 
@@ -91,20 +98,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     except config.ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
-    settings = resolved.settings
-    setup_logging(settings)
+    setup_logging(resolved.settings)
 
     handlers: dict[str, Any] = {
         "version": _cmd_version,
         "config": _cmd_config,
         "status": _cmd_status,
         "doctor": _cmd_doctor,
-        "sync": _cmd_sync,
-        "list": _cmd_list,
+        "chats": _cmd_chats,
+        "fetch": _cmd_fetch,
         "show": _cmd_show,
         "search": _cmd_search,
+        "forget": _cmd_forget,
         "export-raw": _cmd_export_raw,
         "reset": _cmd_reset,
+        "sync": _cmd_sync_removed,
     }
     return _run(handlers[args.command], args, resolved)
 
@@ -114,30 +122,35 @@ def _run(handler: Any, args: argparse.Namespace, resolved: config.Resolved) -> i
         return int(handler(args, resolved))
     except BrokenPipeError:  # pragma: no cover - piping into head
         return EXIT_OK
-    except config.ConfigError as exc:
+    except (config.ConfigError, store.StoreError) as exc:
         _err(str(exc))
-        return EXIT_ERROR
-    except LockBusy as exc:
+        return EXIT_CACHE if isinstance(exc, store.StoreError) else EXIT_ERROR
+    except AmbiguousTarget as exc:
         _err(str(exc))
-        return EXIT_LOCKED
+        for chat_id, title in exc.candidates:
+            print(f"  {chat_id[:8]}  {title}", file=sys.stderr)
+        return EXIT_AMBIGUOUS
+    except TargetNotFound as exc:
+        _err(str(exc))
+        return EXIT_NOT_FOUND
+    except query.NotFound as exc:
+        _err(str(exc))
+        return EXIT_NOT_FOUND
     except LoginRequired as exc:
         _err(str(exc))
         return EXIT_LOGIN
     except ParseDriftError as exc:
         _err(f"could not parse the page: {exc}")
         return EXIT_DRIFT
-    except query.NotFound as exc:
+    except ChatNotFound as exc:
         _err(str(exc))
         return EXIT_NOT_FOUND
     except BrowserError as exc:
         _err(str(exc))
         return EXIT_BROWSER
-    except store.NewerSchemaError as exc:
+    except LockBusy as exc:
         _err(str(exc))
-        return EXIT_CACHE
-    except store.StoreError as exc:
-        _err(str(exc))
-        return EXIT_CACHE
+        return EXIT_LOCKED
     except KeyboardInterrupt:  # pragma: no cover - interactive
         _err("interrupted")
         return EXIT_ERROR
@@ -147,7 +160,7 @@ def _err(message: str) -> None:
     print(f"error: {message}", file=sys.stderr)
 
 
-def _out(args: argparse.Namespace, payload: Any, text: str) -> None:
+def _emit(args: argparse.Namespace, payload: Any, text: str) -> None:
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
     else:
@@ -171,8 +184,7 @@ def _cmd_config(args: argparse.Namespace, resolved: config.Resolved) -> int:
         ("cdp_url", settings.cdp_url),
         ("min_delay_s", settings.min_delay_s),
         ("max_delay_s", settings.max_delay_s),
-        ("recent_window", settings.recent_window),
-        ("lock_timeout_s", settings.lock_timeout_s),
+        ("lookup_limit", settings.lookup_limit),
         ("log_level", settings.log_level),
         ("data_dir", settings.data_dir),
         ("config_file", settings.config_file),
@@ -186,32 +198,29 @@ def _cmd_config(args: argparse.Namespace, resolved: config.Resolved) -> int:
 
 def _cmd_status(args: argparse.Namespace, resolved: config.Resolved) -> int:
     counts = query.counts()
-    last = query.last_run()
+    last = query.last_fetch()
     payload = {
         "data_dir": str(resolved.settings.data_dir),
         "db_path": str(paths.db_path()),
-        "sync_running": is_locked(paths.lock_path()),
         "chats": counts.chats,
-        "fetched": counts.fetched,
-        "stale": counts.stale,
         "turns": counts.turns,
-        "last_full_sync": counts.last_full_sync,
-        "last_incremental_sync": counts.last_incremental_sync,
-        "last_run": last,
+        "last_fetch": counts.last_fetch,
+        "fetch_running": is_locked(paths.lock_path()),
+        "last_fetch_detail": None
+        if last is None
+        else {"chat_id": last.chat_id, "status": last.status, "fetched_at": last.fetched_at},
         "log_file": str(log_file()),
     }
     text = "\n".join(
         [
-            f"database      {payload['db_path']}",
-            f"chats         {counts.chats} ({counts.fetched} fetched, {counts.stale} stale)",
-            f"messages      {counts.turns}",
-            f"sync running  {'yes' if payload['sync_running'] else 'no'}",
-            f"last full     {counts.last_full_sync or 'never'}",
-            f"last update   {counts.last_incremental_sync or 'never'}",
-            f"log file      {payload['log_file']}",
+            f"database     {payload['db_path']}",
+            f"cached chats {counts.chats} ({counts.turns} messages)",
+            f"fetching     {'yes' if payload['fetch_running'] else 'no'}",
+            f"last fetch   {counts.last_fetch or 'never'}",
+            f"log file     {payload['log_file']}",
         ]
     )
-    _out(args, payload, text)
+    _emit(args, payload, text)
     return EXIT_OK
 
 
@@ -226,87 +235,103 @@ def _cmd_doctor(args: argparse.Namespace, resolved: config.Resolved) -> int:
     return EXIT_OK if report.ok else EXIT_ERROR
 
 
-def _cmd_sync(args: argparse.Namespace, resolved: config.Resolved) -> int:
+def _cmd_chats(args: argparse.Namespace, resolved: config.Resolved) -> int:
     settings = resolved.settings
-    options = SyncOptions(
-        full=args.full,
-        limit=args.limit,
-        recent_window=settings.recent_window,
-        min_delay_s=settings.min_delay_s,
-        max_delay_s=settings.max_delay_s,
-    )
-    progress = None if args.quiet or args.json else (lambda message: print(message, flush=True))
-    with (
-        sync_lock(paths.lock_path(), timeout_s=settings.lock_timeout_s),
-        Browser(settings.cdp_url) as browser,
-    ):
+    if args.cached:
+        rows = query.list_cached(limit=args.limit)
+        payload = [
+            {
+                "id": row.id,
+                "title": row.title,
+                "url": row.url,
+                "turns": row.turn_count,
+                "fetched_at": row.fetched_at,
+            }
+            for row in rows
+        ]
+        text = "\n".join(
+            f"{row.id[:8]}  {_turn_count(row.turn_count):>4}  {row.fetched_at[:10]}  "
+            f"{row.title[:60]}"
+            for row in rows
+        )
+        _emit(args, payload, text or "no cached chats yet; use: chatgpt-bridge fetch <target>")
+        return EXIT_OK
+
+    with Browser(settings.cdp_url) as browser:
         adapter = ChatGPTAdapter(browser, page_delay_s=min(settings.min_delay_s, 1.0))
-        result = run_sync(adapter, options, progress=progress)
-    payload = {"status": result.status, **result.summary()}
-    _out(
-        args,
-        payload,
-        f"{result.status}: listed {result.listed}, fetched {result.fetched} "
-        f"(new {result.new}, updated {result.updated}, unchanged {result.unchanged}), "
-        f"stale {result.stale}, errors {len(result.errors)}",
-    )
-    if result.errors and not args.json:
-        for message in result.errors[:10]:
-            print(f"  {message}", file=sys.stderr)
-    return EXIT_OK if not result.errors else EXIT_ERROR
-
-
-def _cmd_list(args: argparse.Namespace, resolved: config.Resolved) -> int:
-    stale = True if args.stale else (False if args.fresh else None)
-    rows = query.list_chats(
-        section=args.section, stale=stale, unfetched=args.unfetched, limit=args.limit
-    )
+        refs = adapter.list_chats(scroll=False, limit=args.limit or settings.lookup_limit)
     payload = [
-        {
-            "id": row.id,
-            "title": row.title,
-            "url": row.url,
-            "section": row.section,
-            "turns": row.turn_count,
-            "fetched_at": row.fetched_at,
-            "stale": row.stale,
-        }
-        for row in rows
+        {"id": ref.id, "title": ref.title, "url": ref.url, "section": ref.section} for ref in refs
     ]
-    text = "\n".join(
-        f"{row.id[:8]}  {row.section or '-':<8}  {_turn_count(row.turn_count):>4}  "
-        f"{row.title[:60]}{'  [stale]' if row.stale else ''}"
-        for row in rows
-    )
-    _out(args, payload, text or "no chats cached; run: chatgpt-bridge sync")
+    text = "\n".join(f"{ref.id[:8]}  {ref.section or '-':<8}  {ref.title[:60]}" for ref in refs)
+    _emit(args, payload, text)
     return EXIT_OK
 
 
-def _turn_count(value: int | None) -> str:
-    return "?" if value is None else str(value)
+def _cmd_fetch(args: argparse.Namespace, resolved: config.Resolved) -> int:
+    settings = resolved.settings
+
+    def session() -> Any:
+        browser = Browser(settings.cdp_url)
+        browser.connect()
+        return _Session(
+            browser, ChatGPTAdapter(browser, page_delay_s=min(settings.min_delay_s, 1.0))
+        )
+
+    with sync_lock(paths.lock_path(), timeout_s=0):
+        result = fetch_chat(
+            args.target,
+            refresh=args.refresh,
+            session=session,
+            lookup_limit=settings.lookup_limit,
+        )
+    chat = result.chat
+    payload = {
+        "outcome": result.outcome,
+        "changed": result.changed,
+        **query.envelope(chat).as_dict(),
+    }
+    if args.format == "json" or args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    else:
+        if not args.quiet:
+            print(
+                f"{result.outcome}: {chat.title} ({len(chat.turns)} messages, {chat.fetched_at})",
+                file=sys.stderr,
+            )
+        print(
+            query.render_markdown(chat) if args.format == "md" else query.render_text(chat), end=""
+        )
+    return EXIT_OK
+
+
+class _Session:
+    """Closes the browser and cleans up cached chats when the fetch finishes."""
+
+    def __init__(self, browser: Browser, adapter: ChatGPTAdapter) -> None:
+        self.browser = browser
+        self.adapter = adapter
+
+    def __enter__(self) -> ChatGPTAdapter:
+        return self.adapter
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.browser.close()
 
 
 def _cmd_show(args: argparse.Namespace, resolved: config.Resolved) -> int:
-    chat_id = chat_id_from_url(args.chat)
-    chat = query.get_chat(chat_id)
+    chat = query.get_chat(args.target)
     if args.format == "json" or args.json:
-        print(json.dumps(query.envelope(chat).as_dict(), ensure_ascii=False, indent=2))
-        return EXIT_OK
-    if args.format == "md":
+        print(json.dumps(query.envelope(chat).as_dict(), ensure_ascii=False, indent=2, default=str))
+    elif args.format == "md":
         print(query.render_markdown(chat), end="")
-        return EXIT_OK
-    print(query.render_text(chat), end="")
+    else:
+        print(query.render_text(chat), end="")
     return EXIT_OK
 
 
 def _cmd_search(args: argparse.Namespace, resolved: config.Resolved) -> int:
-    hits = query.search(
-        args.query,
-        chat_id=chat_id_from_url(args.chat) if args.chat else None,
-        section=args.section,
-        since=args.since,
-        limit=args.limit,
-    )
+    hits = query.search(args.query, chat=args.chat, limit=args.limit)
     payload = [
         {
             "chat_id": hit.chat_id,
@@ -320,7 +345,31 @@ def _cmd_search(args: argparse.Namespace, resolved: config.Resolved) -> int:
     text = "\n\n".join(
         f"{hit.chat_id[:8]}  [{hit.position}] {hit.role}\n  {hit.snippet}" for hit in hits
     )
-    _out(args, payload, text or "no matches")
+    if not hits:
+        text = (
+            "no matches in cached chats "
+            f"({query.counts().chats} cached). Fetch more with: chatgpt-bridge fetch <target>"
+        )
+    _emit(args, payload, text)
+    return EXIT_OK
+
+
+def _cmd_forget(args: argparse.Namespace, resolved: config.Resolved) -> int:
+    if not args.yes:
+        if not sys.stdin.isatty():
+            _err("refusing to remove a cached chat without --yes when stdin is not a terminal")
+            return EXIT_USAGE
+        if input(f"Remove {args.target!r} from the cache? [y/N] ").strip().lower() not in {
+            "y",
+            "yes",
+        }:
+            print("cancelled")
+            return EXIT_OK
+    chat_id = query.forget(args.target)
+    if args.json:
+        print(json.dumps({"forgotten": chat_id}))
+    else:
+        print(f"removed {chat_id} from the cache")
     return EXIT_OK
 
 
@@ -330,7 +379,7 @@ def _cmd_export_raw(args: argparse.Namespace, resolved: config.Resolved) -> int:
     target = maintenance.export_raw(args.out)
     counts = query.counts()
     if args.json:
-        _out(args, {"path": str(target), "chats": counts.chats}, "")
+        print(json.dumps({"path": str(target), "chats": counts.chats}))
     else:
         print(f"wrote {target} ({counts.chats} chats, {counts.turns} messages)")
     return EXIT_OK
@@ -350,6 +399,18 @@ def _cmd_reset(args: argparse.Namespace, resolved: config.Resolved) -> int:
     maintenance.reset()
     print("cache deleted")
     return EXIT_OK
+
+
+def _cmd_sync_removed(args: argparse.Namespace, resolved: config.Resolved) -> int:
+    _err(
+        "`sync` was removed: chatgpt-bridge now fetches chats on demand.\n"
+        'use: chatgpt-bridge fetch "<title, id, or url>"'
+    )
+    return EXIT_USAGE
+
+
+def _turn_count(value: int | None) -> str:
+    return "?" if value is None else str(value)
 
 
 if __name__ == "__main__":

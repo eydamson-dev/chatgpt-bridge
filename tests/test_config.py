@@ -15,7 +15,7 @@ def test_defaults_when_no_file_or_env(tmp_path: Path) -> None:
     s = resolved.settings
     assert s.cdp_url == "http://127.0.0.1:9222"
     assert (s.min_delay_s, s.max_delay_s) == (2.0, 4.0)
-    assert s.recent_window == 10
+    assert s.lookup_limit == 50
     assert s.log_level == "info"
     settings_sources = {k: v for k, v in resolved.sources.items() if k != "config_file"}
     assert set(settings_sources.values()) == {"default"}
@@ -31,7 +31,7 @@ def test_file_overrides_defaults(tmp_path: Path) -> None:
     assert resolved.settings.cdp_url == "http://127.0.0.1:9333"
     assert resolved.settings.min_delay_s == 1.0
     assert resolved.sources["cdp_url"] == "file"
-    assert resolved.sources["recent_window"] == "default"
+    assert resolved.sources["lookup_limit"] == "default"
 
 
 def test_env_overrides_file(tmp_path: Path) -> None:
@@ -92,8 +92,7 @@ def test_invalid_toml_is_reported(tmp_path: Path) -> None:
         ('[browser]\ncdp_url = "ws://x"\n', "cdp_url must start"),
         ("[pacing]\nmin_delay_s = 5\nmax_delay_s = 1\n", "pacing requires"),
         ("[pacing]\nmin_delay_s = -1\n", "pacing requires"),
-        ("[sync]\nrecent_window = 0\n", "recent_window"),
-        ("[sync]\nlock_timeout_s = -2\n", "lock_timeout_s"),
+        ("[lookup]\nlimit = 0\n", "lookup.limit"),
         ('[logging]\nlevel = "trace"\n', "logging.level"),
     ],
 )

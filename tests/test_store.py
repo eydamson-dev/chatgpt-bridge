@@ -1,13 +1,11 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 import pytest
 
 from chatgpt_bridge import store
-from chatgpt_bridge.store import (
-    Attachment,
-    ChatRef,
-    Turn,
-)
+from chatgpt_bridge.store import Attachment, Turn
 
 
 @pytest.fixture
@@ -17,43 +15,34 @@ def conn(tmp_path: Path):
     connection.close()
 
 
-def make_chat(conn, chat_id="c1", title="First chat", section="recent", rank=0) -> None:
-    store.upsert_listed_chats(
+def seed(
+    conn, chat_id: str = "c1", title: str = "First chat", section: str | None = "recents"
+) -> None:
+    turns = [Turn(role="user", markdown="hi", text="hi")]
+    store.save_chat(
         conn,
-        [
-            ChatRef(
-                id=chat_id,
-                title=title,
-                url=f"https://chatgpt.com/c/{chat_id}",
-                section=section,
-                sidebar_rank=rank,
-            )
-        ],
-        seen_at=store.utc_now(),
+        chat_id=chat_id,
+        title=title,
+        url=f"https://chatgpt.com/c/{chat_id}",
+        section=section,
+        turns=turns,
+        hash_value=store.content_hash(turns),
     )
 
 
-def test_connect_creates_schema(tmp_path: Path) -> None:
+def test_connect_creates_v2_schema(tmp_path: Path) -> None:
     conn = store.connect(tmp_path / "bridge.db")
-    assert store.schema_version(conn) == store.SCHEMA_VERSION
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 2
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"chats", "turns", "attachments", "sync_runs", "meta"} <= tables
+    assert {"chats", "turns", "attachments", "fetch_log", "meta"} <= tables
+    assert "sync_runs" not in tables
     conn.close()
 
 
 def test_db_file_is_user_only(tmp_path: Path) -> None:
     path = tmp_path / "bridge.db"
-    conn = store.connect(path)
-    conn.close()
-    assert path.stat().st_mode & 0o077 == 0
-
-
-def test_reopen_is_idempotent(tmp_path: Path) -> None:
-    path = tmp_path / "bridge.db"
     store.connect(path).close()
-    conn = store.connect(path)
-    assert store.schema_version(conn) == store.SCHEMA_VERSION
-    conn.close()
+    assert path.stat().st_mode & 0o077 == 0
 
 
 def test_newer_schema_refused(tmp_path: Path) -> None:
@@ -65,93 +54,61 @@ def test_newer_schema_refused(tmp_path: Path) -> None:
         store.connect(path)
 
 
-def test_backup_created_when_migrating(tmp_path: Path) -> None:
+def test_v1_database_is_migrated(tmp_path: Path) -> None:
+    """A schema-1 database (the old backfill model) is rebuilt as schema 2."""
     path = tmp_path / "bridge.db"
     conn = store.connect(path)
-    target = store._backup(conn, path, store.SCHEMA_VERSION)
+    conn.execute("PRAGMA user_version = 1")
     conn.close()
-    assert target == tmp_path / f"bridge.db.bak-{store.SCHEMA_VERSION}"
-    assert target.exists()
 
-
-def test_migration_runs_once_from_empty(tmp_path: Path) -> None:
-    path = tmp_path / "bridge.db"
-    store.connect(path).close()
-    assert not list(tmp_path.glob("bridge.db.bak-*"))
+    conn = store.connect(path)
+    assert store.schema_version(conn) == 2
+    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "sync_runs" not in tables
+    conn.close()
+    assert (tmp_path / "bridge.db.bak-1").exists()
 
 
 def test_drop_migration_backup(tmp_path: Path) -> None:
-    path = tmp_path / "bridge.db"
     backup = tmp_path / "bridge.db.bak-1"
     backup.write_text("x", encoding="utf-8")
-    store.drop_migration_backup(path)
+    store.drop_migration_backup(tmp_path / "bridge.db")
     assert not backup.exists()
 
 
-def test_upsert_listed_chats_is_idempotent(conn) -> None:
-    make_chat(conn)
-    make_chat(conn, title="Renamed")
-    rows = store.chat_summaries(conn)
-    assert len(rows) == 1
-    assert rows[0].title == "Renamed"
-
-
-def test_upsert_does_not_clear_fetched_content(conn) -> None:
-    make_chat(conn)
-    turns = [Turn(role="user", markdown="hi", text="hi")]
-    store.save_chat(conn, "c1", turns, store.content_hash(turns))
-    make_chat(conn, title="Renamed after fetch")
+def test_save_chat_stores_metadata_and_turns(conn) -> None:
+    seed(conn)
     chat = store.get_chat(conn, "c1")
     assert chat is not None
-    assert chat.turns and chat.turns[0].text == "hi"
-    assert chat.fetched_at is not None
+    assert chat.title == "First chat"
+    assert chat.url == "https://chatgpt.com/c/c1"
+    assert chat.fetched_at
+    assert chat.turn_count == 1
+    assert chat.turns[0].text == "hi"
 
 
-def test_stale_marking_and_recovery(conn) -> None:
-    make_chat(conn, "c1")
-    make_chat(conn, "c2")
-    stale = store.mark_missing_stale(conn, set())
-    assert set(stale) == {"c1", "c2"}
-    assert store.get_chat(conn, "c1").stale  # type: ignore[union-attr]
-
-    store.upsert_listed_chats(
-        conn,
-        [ChatRef(id="c1", title="First chat", url="https://chatgpt.com/c/c1", section="recent")],
-        seen_at="2099-01-02T00:00:00+00:00",
-    )
-    assert not store.get_chat(conn, "c1").stale  # type: ignore[union-attr]
-    assert store.get_chat(conn, "c2").stale  # type: ignore[union-attr]
-    assert len(store.chat_summaries(conn)) == 2
-
-
-def test_stale_filter(conn) -> None:
-    make_chat(conn, "c1")
-    make_chat(conn, "c2")
-    store.mark_missing_stale(conn, set())
-    assert [c.id for c in store.chat_summaries(conn, stale=True)] == ["c1", "c2"]
-    assert store.chat_summaries(conn, stale=False) == []
-
-
-def test_save_chat_replaces_turns_and_sets_metadata(conn) -> None:
-    make_chat(conn)
-    first = [
+def test_save_chat_replaces_previous_copy(conn) -> None:
+    seed(conn)
+    turns = [
         Turn(role="user", markdown="a", text="a"),
         Turn(role="assistant", markdown="b", text="b"),
     ]
-    store.save_chat(conn, "c1", first, store.content_hash(first))
-    second = [Turn(role="user", markdown="a", text="a")]
-    store.save_chat(conn, "c1", second, store.content_hash(second))
-
+    store.save_chat(
+        conn,
+        chat_id="c1",
+        title="Renamed",
+        url="https://chatgpt.com/c/c1",
+        turns=turns,
+        hash_value=store.content_hash(turns),
+    )
     chat = store.get_chat(conn, "c1")
     assert chat is not None
-    assert chat.turn_count == 1
-    assert len(chat.turns) == 1
-    assert chat.content_hash == store.content_hash(second)
-    assert store.counts(conn).turns == 1
+    assert chat.title == "Renamed"
+    assert len(chat.turns) == 2
+    assert store.counts(conn).turns == 2
 
 
 def test_attachments_round_trip(conn) -> None:
-    make_chat(conn)
     turns = [
         Turn(
             role="user",
@@ -160,7 +117,14 @@ def test_attachments_round_trip(conn) -> None:
             attachments=(Attachment(name="a.pdf", mime="application/pdf", kind="file"),),
         )
     ]
-    store.save_chat(conn, "c1", turns, store.content_hash(turns))
+    store.save_chat(
+        conn,
+        chat_id="c1",
+        title="t",
+        url="u",
+        turns=turns,
+        hash_value=store.content_hash(turns),
+    )
     chat = store.get_chat(conn, "c1")
     assert chat is not None
     assert chat.turns[0].attachments == (
@@ -169,166 +133,116 @@ def test_attachments_round_trip(conn) -> None:
 
 
 def test_alternatives_preserved(conn) -> None:
-    make_chat(conn)
-    turns = [Turn(role="assistant", markdown="x", text="x", alternatives=3)]
-    store.save_chat(conn, "c1", turns, store.content_hash(turns))
+    turns = [Turn(role="user", markdown="x", text="x", alternatives=3)]
+    store.save_chat(conn, "c1", "t", "u", turns, store.content_hash(turns))
     chat = store.get_chat(conn, "c1")
     assert chat is not None
     assert chat.turns[0].alternatives == 3
 
 
-def test_content_hash_ignores_positions_but_tracks_formatting() -> None:
+def test_content_hash_tracks_markdown_not_plain_text() -> None:
     a = [Turn(role="user", markdown="hello", text="hello")]
-    b = [Turn(role="user", markdown="hello", text="different plain text")]
+    b = [Turn(role="user", markdown="hello", text="different")]
     c = [Turn(role="user", markdown="hello **world**", text="hello world")]
     assert store.content_hash(a) == store.content_hash(b)
     assert store.content_hash(a) != store.content_hash(c)
 
 
-def test_chats_needing_fetch_order_and_parse_version(conn) -> None:
-    make_chat(conn, "c1", rank=1)
-    make_chat(conn, "c2", rank=0)
-    assert store.chats_needing_fetch(conn) == ["c2", "c1"]
-
-    turns = [Turn(role="user", markdown="x", text="x")]
-    store.save_chat(conn, "c2", turns, store.content_hash(turns))
-    assert store.chats_needing_fetch(conn) == ["c1"]
-
-    conn.execute("UPDATE chats SET parse_version = 0 WHERE id = 'c2'")
-    assert store.chats_needing_fetch(conn) == ["c2", "c1"]
-    assert store.chats_needing_fetch(conn, limit=1) == ["c2"]
+def test_resolve_chat_id_exact_and_prefix(conn) -> None:
+    seed(conn, "aaaa1111-2222", "one")
+    assert store.resolve_chat_id(conn, "aaaa1111-2222") == "aaaa1111-2222"
+    assert store.resolve_chat_id(conn, "aaaa") == "aaaa1111-2222"
+    assert store.resolve_chat_id(conn, "zzz") is None
 
 
-def test_search_finds_text_and_returns_snippet(conn) -> None:
-    make_chat(conn, "c1", title="Fedora notes")
-    turns = [
-        Turn(
-            role="user",
-            markdown="How do I install pkg-config?",
-            text="How do I install pkg-config?",
-        ),
-        Turn(
-            role="assistant",
-            markdown="Use dnf install pkgconf-pkg-config.",
-            text="Use dnf install pkgconf-pkg-config.",
-        ),
-    ]
-    store.save_chat(conn, "c1", turns, store.content_hash(turns))
+def test_resolve_chat_id_ambiguous(conn) -> None:
+    seed(conn, "aaaa1111", "one")
+    seed(conn, "aaaa2222", "two")
+    with pytest.raises(store.AmbiguousChatId):
+        store.resolve_chat_id(conn, "aaaa")
 
-    hits = store.search(conn, "pkg-config")
-    assert len(hits) == 2
-    assert hits[0].chat_id == "c1"
+
+def test_find_by_title(conn) -> None:
+    seed(conn, "c1", "Lenovo ThinkPad Review")
+    seed(conn, "c2", "Fedora notes")
+    assert [c.id for c in store.find_by_title(conn, "fedora notes")] == ["c2"]
+    assert [c.id for c in store.find_by_title(conn, "Lenovo")] == ["c1"]
+    assert store.find_by_title(conn, "nothing") == []
+
+
+def test_forget_chat(conn) -> None:
+    seed(conn, "c1")
+    assert store.forget_chat(conn, "c1") is True
+    assert store.forget_chat(conn, "c1") is False
+    assert store.counts(conn).chats == 0
+
+
+def test_fetch_log_records_and_reports_last(conn) -> None:
+    store.record_fetch(conn, "c1", "ok", fetched_at="2026-01-01T00:00:00+00:00")
+    store.record_fetch(conn, "c2", "failed", "boom", fetched_at="2026-01-02T00:00:00+00:00")
+    entry = store.last_fetch(conn)
+    assert entry is not None
+    assert (entry.chat_id, entry.status, entry.detail) == ("c2", "failed", "boom")
+    assert store.counts(conn).last_fetch == "2026-01-02T00:00:00+00:00"
+
+
+def test_search_finds_text_case_insensitively(conn) -> None:
+    turns = [Turn(role="user", markdown="pkg-config", text="install pkg-config")]
+    store.save_chat(conn, "c1", "Fedora notes", "u", turns, store.content_hash(turns))
+    hits = store.search(conn, "PKG-CONFIG")
+    assert len(hits) == 1
     assert hits[0].title == "Fedora notes"
-    assert "pkg" in hits[0].snippet
-
-
-def test_search_is_case_insensitive(conn) -> None:
-    make_chat(conn)
-    turns = [Turn(role="user", markdown="Wayland compositor", text="Wayland compositor")]
-    store.save_chat(conn, "c1", turns, store.content_hash(turns))
-    assert store.search(conn, "WAYLAND")
-
-
-def test_search_handles_substrings(conn) -> None:
-    make_chat(conn)
-    turns = [Turn(role="user", markdown="useEffect cleanup", text="useEffect cleanup")]
-    store.save_chat(conn, "c1", turns, store.content_hash(turns))
-    assert store.search(conn, "Effect")  # trigram substring match
+    assert "pkg-config" in hits[0].snippet
 
 
 def test_search_short_query_uses_like(conn) -> None:
-    make_chat(conn)
     turns = [Turn(role="user", markdown="an ox", text="an ox")]
-    store.save_chat(conn, "c1", turns, store.content_hash(turns))
-    hits = store.search(conn, "ox")
-    assert len(hits) == 1
-    assert "ox" in hits[0].snippet
+    store.save_chat(conn, "c1", "t", "u", turns, store.content_hash(turns))
+    assert len(store.search(conn, "ox")) == 1
 
 
-def test_search_scopes(conn) -> None:
-    make_chat(conn, "c1", section="pinned")
-    make_chat(conn, "c2", section="recent")
+def test_search_scoped_to_chat(conn) -> None:
     turns = [Turn(role="user", markdown="docker compose", text="docker compose")]
-    store.save_chat(conn, "c1", turns, store.content_hash(turns))
-    store.save_chat(conn, "c2", turns, store.content_hash(turns))
-
+    store.save_chat(conn, "c1", "a", "u", turns, store.content_hash(turns))
+    store.save_chat(conn, "c2", "b", "u", turns, store.content_hash(turns))
     assert len(store.search(conn, "docker")) == 2
     assert len(store.search(conn, "docker", chat_id="c2")) == 1
-    assert len(store.search(conn, "docker", section="pinned")) == 1
-    assert store.search(conn, "docker", since="2099-01-01") == []
 
 
-def test_search_filters_syntax_characters(conn) -> None:
-    make_chat(conn)
+def test_search_filters_fts_syntax(conn) -> None:
     turns = [Turn(role="user", markdown="what is a*b?", text="what is a*b?")]
-    store.save_chat(conn, "c1", turns, store.content_hash(turns))
+    store.save_chat(conn, "c1", "t", "u", turns, store.content_hash(turns))
     assert store.search(conn, "a*b")
     assert store.search(conn, "NOT OR AND") == []
 
 
-def test_empty_query_returns_nothing(conn) -> None:
-    assert store.search(conn, "   ") == []
-
-
-def test_fts_tracks_updates_and_deletes(conn) -> None:
-    make_chat(conn)
+def test_fts_tracks_updates(conn) -> None:
     first = [Turn(role="user", markdown="alpha", text="alpha")]
-    store.save_chat(conn, "c1", first, store.content_hash(first))
+    store.save_chat(conn, "c1", "t", "u", first, store.content_hash(first))
     assert store.search(conn, "alpha")
     second = [Turn(role="user", markdown="beta", text="beta")]
-    store.save_chat(conn, "c1", second, store.content_hash(second))
+    store.save_chat(conn, "c1", "t", "u", second, store.content_hash(second))
     assert store.search(conn, "alpha") == []
     assert store.search(conn, "beta")
 
 
-def test_deleting_chat_cascades(conn) -> None:
-    make_chat(conn)
-    turns = [Turn(role="user", markdown="x", text="x")]
-    store.save_chat(conn, "c1", turns, store.content_hash(turns))
-    conn.execute("DELETE FROM chats WHERE id = 'c1'")
-    assert store.counts(conn).turns == 0
+def test_snippet_includes_context(conn) -> None:
+    text = "x" * 100 + " needle " + "y" * 100
+    turns = [Turn(role="user", markdown=text, text=text)]
+    store.save_chat(conn, "c1", "t", "u", turns, store.content_hash(turns))
+    hit = store.search(conn, "needle")[0]
+    assert "needle" in hit.snippet
+    assert hit.snippet.startswith("…")
+    assert len(hit.snippet) < len(text)
 
 
-def test_sync_runs_recorded(conn) -> None:
-    run_id = store.save_sync_run(conn, "full", "running", {"seen": 3}, store.utc_now())
-    store.update_sync_run(conn, run_id, "ok", {"seen": 3, "fetched": 3})
-    row = conn.execute("SELECT * FROM sync_runs WHERE id = ?", (run_id,)).fetchone()
-    assert row["status"] == "ok"
-    assert row["finished_at"] is not None
-
-
-def test_meta_round_trip(conn) -> None:
-    store.set_meta(conn, "last_full_sync", "2026-01-01T00:00:00+00:00")
-    store.set_meta(conn, "last_full_sync", "2026-01-02T00:00:00+00:00")
-    assert store.get_meta(conn, "last_full_sync") == "2026-01-02T00:00:00+00:00"
-    assert store.counts(conn).last_full_sync == "2026-01-02T00:00:00+00:00"
-
-
-def test_counts(conn) -> None:
-    make_chat(conn, "c1")
-    make_chat(conn, "c2")
-    turns = [Turn(role="user", markdown="x", text="x")]
-    store.save_chat(conn, "c1", turns, store.content_hash(turns))
-    c = store.counts(conn)
-    assert (c.chats, c.fetched, c.turns, c.stale) == (2, 1, 1, 0)
-
-
-def test_delete_all_clears_tables(conn) -> None:
-    make_chat(conn)
-    turns = [Turn(role="user", markdown="x", text="x")]
-    store.save_chat(conn, "c1", turns, store.content_hash(turns))
-    store.set_meta(conn, "k", "v")
+def test_delete_all(conn) -> None:
+    seed(conn)
+    store.record_fetch(conn, "c1", "ok")
     store.delete_all(conn)
-    c = store.counts(conn)
-    assert (c.chats, c.turns) == (0, 0)
-    assert store.get_meta(conn, "k") is None
+    counts = store.counts(conn)
+    assert (counts.chats, counts.turns, counts.last_fetch) == (0, 0, None)
 
 
-def test_chat_exists(conn) -> None:
-    make_chat(conn, "c1")
-    assert store.chat_exists(conn, "c1")
-    assert not store.chat_exists(conn, "nope")
-
-
-def test_get_chat_missing_returns_none(conn) -> None:
+def test_missing_chat_returns_none(conn) -> None:
     assert store.get_chat(conn, "nope") is None

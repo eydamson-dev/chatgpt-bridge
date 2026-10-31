@@ -5,7 +5,7 @@ import hashlib
 import json
 import shutil
 import sqlite3
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,11 +13,10 @@ from typing import Any, Literal
 
 from chatgpt_bridge import paths
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_PARSE_VERSION = 1
 Role = Literal["user", "assistant"]
-RunKind = Literal["full", "incremental", "single"]
-RunStatus = Literal["running", "ok", "partial", "failed", "aborted"]
+FetchStatus = Literal["ok", "unchanged", "failed"]
 
 
 class StoreError(RuntimeError):
@@ -28,15 +27,19 @@ class NewerSchemaError(StoreError):
     """The database was written by a newer version of the app."""
 
 
+class AmbiguousChatId(LookupError):
+    """A chat ID prefix matched several cached chats."""
+
+
 @dataclass(frozen=True)
 class ChatRef:
-    """A chat as it appears in a listing, before its content is fetched."""
+    """A chat as it appears in the sidebar listing."""
 
     id: str
     title: str
     url: str
     section: str | None = None
-    sidebar_rank: int | None = None
+    rank: int | None = None
 
 
 @dataclass(frozen=True)
@@ -61,12 +64,9 @@ class StoredChat:
     title: str
     url: str
     section: str | None
-    sidebar_rank: int | None
     content_hash: str | None
     turn_count: int | None
-    fetched_at: str | None
-    last_seen_at: str
-    stale: bool
+    fetched_at: str
     parse_version: int
     turns: tuple[Turn, ...]
 
@@ -77,10 +77,8 @@ class ChatSummary:
     title: str
     url: str
     section: str | None
-    sidebar_rank: int | None
     turn_count: int | None
-    fetched_at: str | None
-    stale: bool
+    fetched_at: str
     parse_version: int
 
 
@@ -96,11 +94,16 @@ class SearchHit:
 @dataclass(frozen=True)
 class Counts:
     chats: int
-    fetched: int
-    stale: int
     turns: int
-    last_full_sync: str | None
-    last_incremental_sync: str | None
+    last_fetch: str | None
+
+
+@dataclass(frozen=True)
+class FetchLogEntry:
+    chat_id: str
+    fetched_at: str
+    status: str
+    detail: str | None
 
 
 def utc_now() -> str:
@@ -108,7 +111,7 @@ def utc_now() -> str:
 
 
 def content_hash(turns: Iterable[Turn]) -> str:
-    """Hash normalized turn content, so formatting or text changes count as updates."""
+    """Hash normalized turn content, so formatting or text changes count as changes."""
     digest = hashlib.sha256()
     for turn in turns:
         digest.update(turn.role.encode("utf-8"))
@@ -155,11 +158,10 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> None:
     if current == SCHEMA_VERSION:
         return
 
-    files = sorted(migrations_dir().glob("*.sql"))
     if current > 0:
         _backup(conn, db_path, current)
 
-    for file in files:
+    for file in sorted(migrations_dir().glob("*.sql")):
         version = int(file.name.split("_", 1)[0])
         if version <= current:
             continue
@@ -184,7 +186,6 @@ def _backup(conn: sqlite3.Connection, db_path: Path, version: int) -> Path:
 
 
 def drop_migration_backup(db_path: Path) -> None:
-    """Called after a successful sync; keeps one fallback until then."""
     for backup in db_path.parent.glob(f"{db_path.name}.bak-*"):
         with contextlib.suppress(OSError):
             backup.unlink()
@@ -213,62 +214,36 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
 # ---------------------------------------------------------------- writes
 
 
-def upsert_listed_chats(
-    conn: sqlite3.Connection,
-    refs: Sequence[ChatRef],
-    seen_at: str,
-    parse_version: int = DEFAULT_PARSE_VERSION,
-) -> None:
-    """Record chats seen in a listing. Never touches fetched content."""
-    with _transaction(conn):
-        for ref in refs:
-            conn.execute(
-                """
-                INSERT INTO chats(id, title, url, section, sidebar_rank, last_seen_at,
-                                  stale, parse_version)
-                VALUES (?, ?, ?, ?, ?, ?, 0, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                  title = excluded.title,
-                  url = excluded.url,
-                  section = excluded.section,
-                  sidebar_rank = excluded.sidebar_rank,
-                  last_seen_at = excluded.last_seen_at,
-                  stale = 0
-                """,
-                (
-                    ref.id,
-                    ref.title,
-                    ref.url,
-                    ref.section,
-                    ref.sidebar_rank,
-                    seen_at,
-                    parse_version,
-                ),
-            )
-
-
-def mark_missing_stale(conn: sqlite3.Connection, seen_ids: Collection[str]) -> list[str]:
-    """Mark cached chats that this listing did not include as stale. Returns their IDs."""
-    seen = set(seen_ids)
-    rows = conn.execute("SELECT id FROM chats WHERE stale = 0").fetchall()
-    ids = [str(row["id"]) for row in rows if str(row["id"]) not in seen]
-    if ids:
-        with _transaction(conn):
-            conn.executemany("UPDATE chats SET stale = 1 WHERE id = ?", [(i,) for i in ids])
-    return ids
-
-
 def save_chat(
     conn: sqlite3.Connection,
     chat_id: str,
+    title: str,
+    url: str,
     turns: Sequence[Turn],
     hash_value: str,
+    section: str | None = None,
     parse_version: int = DEFAULT_PARSE_VERSION,
     fetched_at: str | None = None,
 ) -> None:
-    """Replace a chat's turns in one transaction."""
+    """Store a fetched chat, replacing any previous copy, in one transaction."""
     fetched = fetched_at or utc_now()
     with _transaction(conn):
+        conn.execute(
+            """
+            INSERT INTO chats(id, title, url, section, content_hash, turn_count,
+                              fetched_at, parse_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              title = excluded.title,
+              url = excluded.url,
+              section = excluded.section,
+              content_hash = excluded.content_hash,
+              turn_count = excluded.turn_count,
+              fetched_at = excluded.fetched_at,
+              parse_version = excluded.parse_version
+            """,
+            (chat_id, title, url, section, hash_value, len(turns), fetched, parse_version),
+        )
         conn.execute("DELETE FROM turns WHERE chat_id = ?", (chat_id,))
         for position, turn in enumerate(turns):
             conn.execute(
@@ -282,65 +257,48 @@ def save_chat(
                     "VALUES (?, ?, ?, ?, ?, ?)",
                     (chat_id, position, idx, att.name, att.mime, att.kind),
                 )
-        conn.execute(
-            "UPDATE chats SET content_hash = ?, turn_count = ?, fetched_at = ?, "
-            "parse_version = ?, stale = 0 WHERE id = ?",
-            (hash_value, len(turns), fetched, parse_version, chat_id),
-        )
 
 
-def save_sync_run(
+def forget_chat(conn: sqlite3.Connection, chat_id: str) -> bool:
+    """Remove one chat from the cache. Returns False when it was not cached."""
+    with _transaction(conn):
+        cursor = conn.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+    return cursor.rowcount > 0
+
+
+def record_fetch(
     conn: sqlite3.Connection,
-    kind: RunKind,
-    status: RunStatus,
-    summary: dict[str, Any],
-    started_at: str,
-    finished_at: str | None = None,
-) -> int:
-    cursor = conn.execute(
-        "INSERT INTO sync_runs(kind, started_at, finished_at, status, summary) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (kind, started_at, finished_at, status, json.dumps(summary)),
-    )
-    return int(cursor.lastrowid or 0)
-
-
-def update_sync_run(
-    conn: sqlite3.Connection,
-    run_id: int,
-    status: RunStatus,
-    summary: dict[str, Any],
-    finished_at: str | None = None,
+    chat_id: str,
+    status: FetchStatus,
+    detail: str | None = None,
+    fetched_at: str | None = None,
 ) -> None:
     conn.execute(
-        "UPDATE sync_runs SET status = ?, summary = ?, finished_at = ? WHERE id = ?",
-        (status, json.dumps(summary), finished_at or utc_now(), run_id),
+        "INSERT INTO fetch_log(chat_id, fetched_at, status, detail) VALUES (?, ?, ?, ?)",
+        (chat_id, fetched_at or utc_now(), status, detail),
+    )
+
+
+def last_fetch(conn: sqlite3.Connection) -> FetchLogEntry | None:
+    row = conn.execute(
+        "SELECT chat_id, fetched_at, status, detail FROM fetch_log ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    return FetchLogEntry(
+        chat_id=str(row["chat_id"]),
+        fetched_at=str(row["fetched_at"]),
+        status=str(row["status"]),
+        detail=row["detail"],
     )
 
 
 # ---------------------------------------------------------------- reads
 
 
-def chat_summaries(
-    conn: sqlite3.Connection,
-    section: str | None = None,
-    stale: bool | None = None,
-    unfetched: bool = False,
-    limit: int | None = None,
-) -> list[ChatSummary]:
-    sql = "SELECT * FROM chats WHERE 1 = 1"
+def chat_summaries(conn: sqlite3.Connection, limit: int | None = None) -> list[ChatSummary]:
+    sql = "SELECT * FROM chats ORDER BY fetched_at DESC, title COLLATE NOCASE"
     params: list[Any] = []
-    if section is not None:
-        sql += " AND section = ?"
-        params.append(section)
-    if stale is not None:
-        sql += " AND stale = ?"
-        params.append(1 if stale else 0)
-    if unfetched:
-        sql += " AND fetched_at IS NULL"
-    sql += (
-        " ORDER BY (fetched_at IS NULL), sidebar_rank IS NULL, sidebar_rank, title COLLATE NOCASE"
-    )
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
@@ -350,48 +308,70 @@ def chat_summaries(
             title=str(row["title"]),
             url=str(row["url"]),
             section=row["section"],
-            sidebar_rank=row["sidebar_rank"],
             turn_count=row["turn_count"],
-            fetched_at=row["fetched_at"],
-            stale=bool(row["stale"]),
+            fetched_at=str(row["fetched_at"]),
             parse_version=int(row["parse_version"]),
         )
         for row in conn.execute(sql, params).fetchall()
     ]
 
 
-def chats_needing_fetch(conn: sqlite3.Connection, limit: int | None = None) -> list[str]:
-    sql = (
-        "SELECT id FROM chats WHERE fetched_at IS NULL OR parse_version < ? "
-        "ORDER BY sidebar_rank IS NULL, sidebar_rank, id"
-    )
-    rows = conn.execute(sql, (DEFAULT_PARSE_VERSION,)).fetchall()
-    ids = [str(row["id"]) for row in rows]
-    return ids[:limit] if limit is not None else ids
-
-
 def chat_exists(conn: sqlite3.Connection, chat_id: str) -> bool:
     return conn.execute("SELECT 1 FROM chats WHERE id = ?", (chat_id,)).fetchone() is not None
+
+
+def resolve_chat_id(conn: sqlite3.Connection, candidate: str) -> str | None:
+    """Resolve an exact chat ID or a unique ID prefix (as printed by list commands)."""
+    if chat_exists(conn, candidate):
+        return candidate
+    rows = conn.execute(
+        "SELECT id FROM chats WHERE id LIKE ? LIMIT 2", (f"{candidate}%",)
+    ).fetchall()
+    if len(rows) == 1:
+        return str(rows[0]["id"])
+    if len(rows) > 1:
+        ids = ", ".join(str(row["id"])[:8] for row in rows)
+        raise AmbiguousChatId(f"{candidate!r} matches several cached chats: {ids}")
+    return None
+
+
+def find_by_title(conn: sqlite3.Connection, title: str) -> list[ChatSummary]:
+    """Cached chats whose title matches exactly, else by substring."""
+    exact = conn.execute("SELECT * FROM chats WHERE title = ? COLLATE NOCASE", (title,)).fetchall()
+    rows = (
+        exact
+        or conn.execute(
+            "SELECT * FROM chats WHERE title LIKE ? COLLATE NOCASE", (f"%{title}%",)
+        ).fetchall()
+    )
+    return [
+        ChatSummary(
+            id=str(row["id"]),
+            title=str(row["title"]),
+            url=str(row["url"]),
+            section=row["section"],
+            turn_count=row["turn_count"],
+            fetched_at=str(row["fetched_at"]),
+            parse_version=int(row["parse_version"]),
+        )
+        for row in rows
+    ]
 
 
 def get_chat(conn: sqlite3.Connection, chat_id: str) -> StoredChat | None:
     row = conn.execute("SELECT * FROM chats WHERE id = ?", (chat_id,)).fetchone()
     if row is None:
         return None
-    turns = _load_turns(conn, chat_id)
     return StoredChat(
         id=str(row["id"]),
         title=str(row["title"]),
         url=str(row["url"]),
         section=row["section"],
-        sidebar_rank=row["sidebar_rank"],
         content_hash=row["content_hash"],
         turn_count=row["turn_count"],
-        fetched_at=row["fetched_at"],
-        last_seen_at=str(row["last_seen_at"]),
-        stale=bool(row["stale"]),
+        fetched_at=str(row["fetched_at"]),
         parse_version=int(row["parse_version"]),
-        turns=turns,
+        turns=_load_turns(conn, chat_id),
     )
 
 
@@ -426,8 +406,6 @@ def search(
     conn: sqlite3.Connection,
     query: str,
     chat_id: str | None = None,
-    section: str | None = None,
-    since: str | None = None,
     limit: int = 20,
 ) -> list[SearchHit]:
     """Full-text search. Short queries (<3 chars) fall back to a LIKE scan."""
@@ -440,16 +418,9 @@ def search(
     if chat_id:
         filters.append("t.chat_id = ?")
         params.append(chat_id)
-    if section:
-        filters.append("c.section = ?")
-        params.append(section)
-    if since:
-        filters.append("c.fetched_at >= ?")
-        params.append(since)
     where = (" AND " + " AND ".join(filters)) if filters else ""
 
     if len(query) >= 3:
-        match = _fts_query(query)
         sql = (
             "SELECT t.chat_id, c.title, t.position, t.role, t.text AS text "
             "FROM turns_fts JOIN turns t ON t.rowid = turns_fts.rowid "
@@ -457,7 +428,7 @@ def search(
             f"WHERE turns_fts MATCH ?{where} "
             "ORDER BY rank LIMIT ?"
         )
-        rows = conn.execute(sql, [match, *params, limit]).fetchall()
+        rows = conn.execute(sql, [_fts_query(query), *params, limit]).fetchall()
     else:
         sql = (
             "SELECT t.chat_id, c.title, t.position, t.role, t.text AS text "
@@ -465,8 +436,7 @@ def search(
             f"WHERE lower(t.text) LIKE lower(?){where} "
             "ORDER BY t.chat_id, t.position LIMIT ?"
         )
-        like = f"%{query}%"
-        rows = conn.execute(sql, [like, *params, limit]).fetchall()
+        rows = conn.execute(sql, [f"%{query}%", *params, limit]).fetchall()
 
     return [
         SearchHit(
@@ -485,9 +455,8 @@ SNIPPET_WIDTH = 200
 
 def _snippet(text: str, query: str, width: int = SNIPPET_WIDTH) -> str:
     """A window of text around the first match, with ellipses at the cut edges."""
-    folded = text.lower()
     first_term = next((term for term in query.split() if term), query)
-    index = folded.find(first_term.lower())
+    index = text.lower().find(first_term.lower())
     if index < 0:
         window = text[:width]
         return window + "…" if len(text) > width else window
@@ -507,19 +476,13 @@ def _fts_query(query: str) -> str:
 
 
 def counts(conn: sqlite3.Connection) -> Counts:
-    one = conn.execute(
-        "SELECT COUNT(*) AS total, "
-        "SUM(fetched_at IS NOT NULL) AS fetched, "
-        "SUM(stale) AS stale FROM chats"
-    ).fetchone()
+    chats = conn.execute("SELECT COUNT(*) FROM chats").fetchone()[0]
     turns = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+    entry = last_fetch(conn)
     return Counts(
-        chats=int(one["total"] or 0),
-        fetched=int(one["fetched"] or 0),
-        stale=int(one["stale"] or 0),
+        chats=int(chats or 0),
         turns=int(turns or 0),
-        last_full_sync=get_meta(conn, "last_full_sync"),
-        last_incremental_sync=get_meta(conn, "last_incremental_sync"),
+        last_fetch=entry.fetched_at if entry else None,
     )
 
 
@@ -528,7 +491,7 @@ def delete_all(conn: sqlite3.Connection) -> None:
         conn.execute("DELETE FROM attachments")
         conn.execute("DELETE FROM turns")
         conn.execute("DELETE FROM chats")
-        conn.execute("DELETE FROM sync_runs")
+        conn.execute("DELETE FROM fetch_log")
         conn.execute("DELETE FROM meta")
 
 
@@ -547,3 +510,7 @@ class _transaction:
             self.conn.execute("COMMIT")
         else:
             self.conn.execute("ROLLBACK")
+
+
+def dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str)

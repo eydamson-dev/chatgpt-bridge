@@ -1,4 +1,7 @@
-"""Query services shared by the CLI and the MCP server."""
+"""Query services shared by the CLI and the MCP server.
+
+Reads never touch the browser: everything here works on the local cache.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from chatgpt_bridge import store
+from chatgpt_bridge.resolve import AmbiguousTarget, resolve_from_cache
 from chatgpt_bridge.store import ChatSummary, SearchHit, StoredChat
 
 MAX_LIMIT = 200
@@ -16,53 +20,50 @@ class NotFound(LookupError):
     """The requested chat is not in the cache."""
 
 
-def list_chats(
-    db_path: Path | None = None,
-    section: str | None = None,
-    stale: bool | None = None,
-    unfetched: bool = False,
-    limit: int | None = None,
-) -> list[ChatSummary]:
+def list_cached(db_path: Path | None = None, limit: int | None = None) -> list[ChatSummary]:
     conn = store.connect(db_path)
     try:
-        return store.chat_summaries(
-            conn, section=section, stale=stale, unfetched=unfetched, limit=_cap(limit)
-        )
+        return store.chat_summaries(conn, limit=_cap(limit))
     finally:
         conn.close()
 
 
-def get_chat(chat_id: str, db_path: Path | None = None) -> StoredChat:
+def get_chat(target: str, db_path: Path | None = None) -> StoredChat:
     conn = store.connect(db_path)
     try:
-        chat = store.get_chat(conn, chat_id)
+        summaries = store.chat_summaries(conn)
+        try:
+            resolved = resolve_from_cache(target, summaries)
+        except AmbiguousTarget as exc:
+            raise NotFound(_ambiguous_message(str(exc), exc.candidates)) from exc
+        if resolved is None:
+            raise NotFound(_missing_message(target))
+        chat = store.get_chat(conn, resolved.id)
     finally:
         conn.close()
-    if chat is None:
-        raise NotFound(f"chat {chat_id} is not in the cache; run a sync first")
-    if chat.fetched_at is None:
-        raise NotFound(f"chat {chat_id} is listed but its messages were not fetched yet")
+    if chat is None:  # pragma: no cover - resolved from the same snapshot
+        raise NotFound(_missing_message(target))
     return chat
 
 
 def search(
     query: str,
     db_path: Path | None = None,
-    chat_id: str | None = None,
-    section: str | None = None,
-    since: str | None = None,
+    chat: str | None = None,
     limit: int | None = None,
 ) -> list[SearchHit]:
     conn = store.connect(db_path)
     try:
-        return store.search(
-            conn,
-            query,
-            chat_id=chat_id,
-            section=section,
-            since=since,
-            limit=_cap(limit),
-        )
+        chat_id: str | None = None
+        if chat:
+            try:
+                resolved = resolve_from_cache(chat, store.chat_summaries(conn))
+            except AmbiguousTarget as exc:
+                raise NotFound(_ambiguous_message(str(exc), exc.candidates)) from exc
+            if resolved is None:
+                raise NotFound(_missing_message(chat))
+            chat_id = resolved.id
+        return store.search(conn, query, chat_id=chat_id, limit=_cap(limit))
     finally:
         conn.close()
 
@@ -75,24 +76,38 @@ def counts(db_path: Path | None = None) -> store.Counts:
         conn.close()
 
 
-def last_run(db_path: Path | None = None) -> dict[str, object] | None:
+def last_fetch(db_path: Path | None = None) -> store.FetchLogEntry | None:
     conn = store.connect(db_path)
     try:
-        row = conn.execute(
-            "SELECT kind, status, started_at, finished_at, summary FROM sync_runs "
-            "ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+        return store.last_fetch(conn)
     finally:
         conn.close()
-    if row is None:
-        return None
-    return {
-        "kind": row["kind"],
-        "status": row["status"],
-        "started_at": row["started_at"],
-        "finished_at": row["finished_at"],
-        "summary": row["summary"],
-    }
+
+
+def forget(target: str, db_path: Path | None = None) -> str:
+    """Remove one chat from the cache. Returns the removed chat ID."""
+    conn = store.connect(db_path)
+    try:
+        summaries = store.chat_summaries(conn)
+        try:
+            resolved = resolve_from_cache(target, summaries)
+        except AmbiguousTarget as exc:
+            raise NotFound(_ambiguous_message(str(exc), exc.candidates)) from exc
+        if resolved is None:
+            raise NotFound(_missing_message(target))
+        store.forget_chat(conn, resolved.id)
+        return resolved.id
+    finally:
+        conn.close()
+
+
+def _missing_message(target: str) -> str:
+    return f'{target!r} is not in the cache. Fetch it first: chatgpt-bridge fetch "{target}"'
+
+
+def _ambiguous_message(message: str, candidates: list[tuple[str, str]]) -> str:
+    listed = "; ".join(f"{chat_id[:8]} {title}" for chat_id, title in candidates)
+    return f"{message}: {listed}"
 
 
 def _cap(limit: int | None) -> int:
@@ -113,7 +128,7 @@ def render_text(chat: StoredChat) -> str:
 
 
 def render_markdown(chat: StoredChat) -> str:
-    """Markdown document with frontmatter-ish header, suitable for exporting."""
+    """Markdown document, suitable for handing to another tool or a note."""
     header = [f"# {chat.title}", "", f"<{chat.url}>", ""]
     body: list[str] = []
     for turn in chat.turns:
@@ -130,8 +145,7 @@ class ChatEnvelope:
     title: str
     url: str
     section: str | None
-    stale: bool
-    fetched_at: str | None
+    fetched_at: str
     turns: list[dict[str, object]]
 
     def as_dict(self) -> dict[str, object]:
@@ -140,7 +154,6 @@ class ChatEnvelope:
             "title": self.title,
             "url": self.url,
             "section": self.section,
-            "stale": self.stale,
             "fetched_at": self.fetched_at,
             "turns": self.turns,
         }
@@ -167,7 +180,6 @@ def envelope(chat: StoredChat, include_markdown: bool = True) -> ChatEnvelope:
         title=chat.title,
         url=chat.url,
         section=chat.section,
-        stale=chat.stale,
         fetched_at=chat.fetched_at,
         turns=turns,
     )

@@ -1,178 +1,210 @@
-# chatgpt-bridge — Full Product Plan
+# chatgpt-bridge — Application Plan (v2 direction: on-demand retrieval)
 
 ## 1. Purpose
 
-`chatgpt-bridge` gives you and OpenCode read access to your ChatGPT web conversations. It attaches to a Chromium-based browser you're already logged into, over the Chrome DevTools Protocol (CDP). It opens its own background tabs to read chats, and keeps a full, searchable local copy.
+`chatgpt-bridge` lets you pull a specific ChatGPT conversation into the terminal
+or into OpenCode, on request. It attaches to a Chromium-based browser you are
+already logged in to, opens the chat in its own background tab, extracts it, and
+returns it.
 
-It does not use the ChatGPT browser extension. It doesn't read cookies or tokens, and it doesn't call undocumented APIs. It reads the rendered pages, the same way you would.
+It is **not** a mirror of your ChatGPT history. Nothing is fetched until you ask
+for it.
 
-**Surfaces:** a CLI (`chatgpt-bridge`) and an MCP server (`chatgpt-bridge-mcp`), both over one core.
+Typical flows:
 
-**Version 1 is read-only.** Sending messages is designed for later, behind an explicit confirmation gate.
+- You started a plan in ChatGPT. You tell the AI "retrieve that chat", and it
+  pulls the plan and works from it.
+- You want a specific past conversation searched or summarised. You name it by
+  URL, ID, or title.
+- You want to find which of your conversations discussed something. The AI
+  fetches the ones you name, and search then covers those.
 
-**Out of scope:** writing to the Obsidian vault (the AI's memory guidance covers that), multiple accounts, archived chats, and any server-side component.
+Surfaces: CLI (`chatgpt-bridge`) and MCP server (`chatgpt-bridge-mcp`), over one
+core. Read-only. Sending messages is a later, separately designed step.
 
-## 2. Assumptions (defaults, change if wrong)
+Out of scope: writing to the Obsidian vault (the AI's memory guidance covers
+that), multiple accounts, archived chats, and any background daemon.
 
-These answer questions that were still open. Each has a one-line reason, and any can be changed before the build starts.
+## 2. Confirmed decisions
 
-| # | Question | Default | Reason |
-|---|---|---|---|
-| A1 | Store message formatting? | Yes. Store markdown per message, plus plain text for search. | Code blocks and tables are common in coding chats; losing them makes old chats hard to use. |
-| A2 | Branches (edits, regenerations)? | Store only the branch currently shown. Record how many alternatives exist. | Keeping every branch multiplies storage and complicates search results. The count lets us add full branch storage later. |
-| A3 | Distribution? | Personal tool installed from this repo with `uv tool install`. No PyPI, no public release. | Keeps the release process simple. Packaging stays clean enough to publish later. |
-| A4 | Browser scope? | Any CDP-capable Chromium browser. Linux is the verified platform. macOS and Windows are documented but not tested in v1. | Matches your request, and the test machine is Linux. |
-| A5 | Attachments and images? | Store the attachment name and type when visible. Don't download the files. | Files are often behind signed URLs and are large. Metadata keeps the chat record complete. |
-| A6 | Deleted chats? | Keep in the cache, marked stale. No pruning in v1. | Your decision. |
-| A7 | Archived chats? | Not fetched. | Your decision. |
-| A8 | Long chats? | Stored in full, no truncation. | Your decision. |
+| Topic | Decision |
+|---|---|
+| Fetching | On demand only. No backfill, no incremental history walk. |
+| Targeting | A chat can be named by URL, ID, or title. |
+| Title lookup | Titles resolve against the visible sidebar list (top items, no history scrolling). |
+| Cache | Fetched chats are kept locally so search covers them; `refresh` refetches on request. |
+| Browser | Any CDP Chromium browser; default `http://127.0.0.1:9222`. The app only connects. |
+| ChatGPT extension | Not used. |
+| Accounts | Single account. |
+| Scope | Read-only. |
+| Search | SQLite FTS5 (trigram) over cached messages only. |
+| Location | `~/projects/chatgpt-bridge/`, data in the platform data dir. |
+| Language | Python 3.12+. |
+
+Defaults carried forward from the earlier plan, all accepted:
+
+- Messages stored as markdown plus plain text for search; code blocks keep their
+  language label; tables and links survive.
+- Only the displayed branch is stored; the alternative count is recorded.
+- Attachments: name and type recorded, files not downloaded.
+- Archived chats skipped; deleted chats kept and marked stale.
+- Distribution: personal tool installed with `uv tool install`.
+- Verified platform: Linux. macOS and Windows documented but untested.
 
 ## 3. Feature list
 
 ### 3.1 Connection and status
-- F-01 Connect to a running CDP browser at a configurable URL.
-- F-02 Report browser reachability, whether ChatGPT is logged in, and cache health.
-- F-03 `doctor` command: checks CDP reachability, login state, the sidebar selector, a sample chat's parse, and the database. Prints a pass/fail for each.
+- F-01 Connect to a CDP browser at a configurable URL.
+- F-02 `status`: cache size, last fetch, whether a fetch is running.
+- F-03 `doctor`: check CDP, login, sidebar lookup, parser, and the database.
 
-### 3.2 Discovery
-- F-10 List chats from the sidebar: Pinned, Projects, and Recents. Deduplicate by chat ID.
-- F-11 Keep sidebar order and section for each chat.
-- F-12 Load the full sidebar by scrolling until its count stops growing.
-- F-13 Skip archived chats.
+### 3.2 Finding a chat
+- F-10 Accept a full chat URL, a bare chat ID, a unique ID prefix, or a title.
+- F-11 Resolve a title against the visible sidebar list (top `lookup_limit`,
+  default 50, no scrolling). Exact match wins; otherwise a unique
+  case-insensitive substring match.
+- F-12 If a title is ambiguous or not visible, fail with a clear message listing
+  the candidate titles, and ask for a URL instead.
+- F-13 `chats` command: show the visible sidebar list, read-only, so you can see
+  what is resolvable.
 
-### 3.3 Content capture
-- F-20 Fetch one chat: all turns in order, with role and text.
-- F-21 Store each message as markdown (A1), plus plain text for search.
-- F-22 Preserve code blocks with their language tags, lists, tables, headings, links, and inline code.
-- F-23 Record attachments by name and type; record images as placeholders with alt text if present (A5).
-- F-24 Record the number of alternative branches per turn (A2). Store only the displayed branch.
-- F-25 Load long chats completely: scroll to the top, click "Loading older messages…", and wait for the turn count to stabilize.
-- F-26 Capture the chat title and URL.
+### 3.3 Fetching
+- F-20 `fetch <target>`: extract one chat, store it, return it.
+- F-21 Already cached and not expired: return the cached copy unless `--refresh`.
+- F-22 `--refresh` refetches even when cached, and reports whether the content
+  changed.
+- F-23 Extract full message content as markdown and plain text, with code block
+  languages, tables, lists, links, image placeholders, and branch counts.
+- F-24 Load long chats completely: scroll to the top, trigger any "load earlier"
+  control, wait for the turn count to stabilise.
+- F-25 Record `fetched_at`, `content_hash`, and the number of messages.
+- F-26 Never present partial data as complete: a failed or drifted parse stores
+  nothing and returns an explicit error.
 
-### 3.4 Sync
-- F-30 Full sync: fetch every listed chat not yet current.
-- F-31 Incremental sync (default): new chats, plus chats that moved up in Recents or changed title.
-- F-32 Content-hash check: rewrite a chat's turns only when its normalized content changed.
-- F-33 Resume: each chat commits on its own, so an interrupted run continues where it stopped.
-- F-34 Stale marking: chats missing from the sidebar are marked stale, not removed (A6).
-- F-35 Progress output during long runs (count, current chat, ETA).
-- F-36 Single-run lock: only one sync at a time, across CLI and MCP.
-- F-37 Sync history: each run recorded with counts, errors, and status.
-- F-38 Re-parse: when the parser version changes, re-fetch only affected chats.
+### 3.4 Reading and search
+- F-30 `show <target>`: print a cached chat (text, markdown, or JSON).
+- F-31 `search <query>`: FTS5 over cached messages, with context snippets;
+  optional scope to one chat.
+- F-32 `chats --cached`: list only chats that have been fetched.
+- F-33 Search states clearly when the cache holds few chats, so an empty result
+  is not mistaken for "not in my history".
 
-### 3.5 Search and read
-- F-40 Full-text search over message text, with snippets and ranking.
-- F-41 Search scope: all chats, one chat, one section, or a date range by sync time.
-- F-42 Search supports code identifiers and non-English text (see §6.3).
-- F-43 Show a chat as readable text or as markdown.
-- F-44 Show a chat as JSON for scripting.
-- F-45 List chats with filters: section, stale, fetched or not.
+### 3.5 Housekeeping
+- F-40 `forget <target>`: remove one chat from the cache.
+- F-41 `reset`: clear the whole cache (prompts).
+- F-42 `export-raw`: JSON Lines dump of the cache.
+- F-43 `config --show`: effective settings and their source.
+- F-44 `sync` is **removed**. If it is invoked, print a message pointing at
+  `fetch`.
 
-### 3.6 Maintenance
-- F-50 `config`: show effective settings and where each value came from.
-- F-51 `reset`: delete the cache after confirmation. Never touches the browser or ChatGPT.
-- F-52 `export-raw`: dump the database to JSON Lines for backup or other tools.
-- F-53 Schema migrations applied automatically, with a backup before each one.
-- F-54 `version`: show app, schema, and parser versions.
+### 3.6 MCP server
+- F-50 Tools: `status`, `chats`, `fetch_chat`, `get_chat`, `search_chats`,
+  `forget_chat`, `doctor`.
+- F-51 `fetch_chat` is the primary tool: it does the retrieval the user asked
+  for, and returns the conversation.
+- F-52 Chat text is returned inside the untrusted-content envelope.
+- F-53 Reads never fetch; `get_chat` returns only cached content and explains
+  how to fetch if missing. This keeps surprise page loads at zero.
 
-### 3.7 MCP server
-- F-60 Tools: `status`, `list_chats`, `search_chats`, `get_chat`, `sync_chats`, `doctor`.
-- F-61 Structured JSON output, with a fixed envelope marking content as untrusted data (§9.2).
-- F-62 Reads come from the cache first; live fetch only when a chat isn't cached.
-- F-63 `sync_chats` runs long and reports progress through MCP logging when the client supports it.
-- F-64 MCP never resets the cache or changes configuration.
-
-### 3.8 Sending (v2, designed, not built)
-- F-70 `send_message(chat_id | new, text, confirm)`. The CLI prompts; MCP requires `confirm=true`.
-- F-71 Never sends without explicit confirmation, and logs that a send happened (without the text).
+### 3.7 Later, not built
+- F-60 `send_message` with explicit confirmation.
+- F-61 Create a new chat.
 
 ## 4. Non-functional requirements
 
-- N-01 **Read-only in v1.** The code has no write path to ChatGPT.
-- N-02 **Non-invasive browser use.** Opens its own tabs and closes them. Never touches the user's existing tabs, and never closes the browser.
-- N-03 **No credentials.** Never reads, stores, or logs cookies, tokens, headers, or storage.
-- N-04 **Polite pacing.** Sequential page loads with a jittered delay (default 2–4 s), configurable.
-- N-05 **Resumable and crash-safe.** SQLite transactions per chat; no half-written chats.
-- N-06 **Fails loudly.** Drift, login walls, and throttling produce explicit errors. Partial data is never presented as complete.
-- N-07 **Local only.** No network listener. MCP over stdio.
-- N-08 **Private by default.** Database and logs are user-only (0600). Chat text never appears in logs at default level.
-- N-09 **Performance target.** A chat of 200 turns fetched and stored in under 10 s, excluding pacing delay.
-- N-10 **Scale target.** 1,000 chats with search latency under 200 ms for typical queries.
+- N-01 Read-only. No write path to ChatGPT exists in this version.
+- N-02 Non-invasive. Own tabs only, always closed; never touches the user's
+  tabs; never closes the browser.
+- N-03 No credentials. No cookies, tokens, headers, or profile files read,
+  stored, or logged.
+- N-04 Bounded by design. One fetch = one chat. Nothing scans your history.
+- N-05 Polite pacing. A minimum gap between page loads in a single command
+  (default 1–2 s), which matters only when several chats are named at once.
+- N-06 Fails loudly. Drift, login walls, and missing chats produce explicit
+  errors; nothing partial is stored.
+- N-07 Local only. stdio MCP, no listener, no daemon.
+- N-08 Private. Database and logs are user-only; logs never contain chat text,
+  titles, or URLs.
+- N-09 Fast enough. A 200-message chat fetches and stores in under 10 s,
+  excluding pacing.
 
 ## 5. Architecture
 
 ```
- chatgpt-bridge (CLI)                 chatgpt-bridge-mcp (stdio, FastMCP)
-        └──────────────┬───────────────────────┘
-                 core services
-   ┌──────────┬───────────┼────────────┬──────────────┐
-   sync      query       doctor       maintenance    lock
-   │          │                       (reset, export)
-   │          │
- ┌─┴──────────┴───┐         ┌───────────────────────┐
- │ Store (SQLite) │         │ ChatGPT adapter       │
- │ + FTS5 index   │         │ sidebar, chat, parse  │
- └────────────────┘         └──────────┬────────────┘
-                                       │
-                            Browser layer (CDP, own tabs)
-                                       │
-                         Playwright connect_over_cdp
-                                       │
-                         any Chromium browser with debug port
+  chatgpt-bridge (CLI)            chatgpt-bridge-mcp (stdio)
+            └───────────┬───────────────┘
+                  core services
+        ┌──────────────┬───────────────┬──────────────┐
+     resolve          fetch            query        doctor
+   (target->id)   (adapter + store)  (read/search) (checks)
+        │              │
+        │      ChatGPT adapter (sidebar lookup, chat extract)
+        │              │
+        └──────► Browser layer (CDP, own tabs) ◄── any CDP browser
 ```
 
-Layer rules:
-- **Browser layer** knows CDP and tabs, nothing about ChatGPT.
-- **Adapter** knows ChatGPT's page structure, and nothing about storage.
-- **Store** knows SQL, nothing about ChatGPT or the browser.
-- **Core services** combine them. Surfaces (CLI, MCP) contain no business logic.
+Layer rules: the browser layer knows CDP and tabs; the adapter knows ChatGPT's
+DOM; the store knows SQL; services combine them; surfaces hold no logic.
 
-## 6. Content capture and storage
+## 6. Core behaviour: resolution and fetch
 
-### 6.1 Extraction strategy
-- `innerText` alone loses code blocks and structure, so extraction walks the rendered DOM of each turn inside `main` and converts it to markdown. Code blocks keep their language label (read from the header element).
-- Turn boundaries use the visible labels `You said:` and `ChatGPT said:`, plus the structural attributes ChatGPT uses where present. Both are checked; disagreement raises drift.
-- UI chrome is removed: copy buttons, feedback buttons, "Latest response," "Think," footer disclaimers, and the regenerate/branch controls.
-- Attachments: file name and MIME type, read from the attachment element. Images: alt text or `[image]`.
-- Each turn yields `markdown` (for reading) and `text` (flattened, for search).
+### 6.1 Resolving a target
+Input can be:
 
-### 6.2 Branches
-- ChatGPT lets you edit a message or regenerate a reply. Each creates an alternative.
-- The app stores the displayed branch and records `alternatives` (count) per turn.
-- Switching branches in the UI is out of scope; the app never clicks branch controls except to read the count.
+1. `https://chatgpt.com/c/<id>` (any ChatGPT host) → ID from the path.
+2. A bare ID or unique prefix → resolved against the cache first, then the
+   sidebar list.
+3. A title (anything else) → sidebar lookup:
+   - exact case-insensitive match → that chat;
+   - single substring match → that chat;
+   - several matches → error listing up to five candidate titles plus IDs;
+   - none → error suggesting `chats` or a URL.
 
-### 6.3 Search text
-- FTS5 with the `trigram` tokenizer, so partial words, code identifiers (`useEffect`, `pkg-config`), and non-Latin scripts match.
-- Trigram needs queries of 3+ characters. Shorter queries fall back to a `LIKE` scan on `text`, with a note in the output.
-- Search runs on `text`; results show the `markdown` snippet.
+Sidebar lookup reads the visible list once per command and never scrolls, so it
+cannot walk your history.
 
-### 6.4 Long chats
-- Store everything (A8). Long chats are fetched in full by scrolling to the top first, then reading top to bottom.
-- Verification: turn count after load matches the count of turns read, and the first turn matches what the page shows at the top.
+### 6.2 Fetching a chat
+1. Resolve the target to an ID.
+2. If cached and not `--refresh`, return it.
+3. Open `https://chatgpt.com/c/<id>` in a background tab.
+4. Wait for messages; if none appear within the timeout, report "not available
+   or deleted" and store nothing.
+5. Load the full conversation (scroll to top, trigger any load-earlier control).
+6. Extract, convert to markdown and text, validate alternation, then store in one
+   transaction. Close the tab in `finally`.
+7. Return the chat plus whether it was newly fetched, refreshed, or unchanged.
+
+If the browser is not reachable, or the user is not logged in, the error names
+the problem and the fix. Nothing is written in either case.
+
+### 6.3 Freshness
+- A cached chat is returned as-is unless `--refresh` is passed.
+- There is no expiry, because nothing is fetched in the background and the cache
+  is only what you asked for.
+- `status` and `chats --cached` show `fetched_at`, so you can judge age and
+  refresh deliberately.
+- `--refresh` recomputes the content hash and reports `changed: true|false`.
 
 ## 7. Data model
 
-SQLite at `$XDG_DATA_HOME/chatgpt-bridge/bridge.db` (mode 0600).
+SQLite at `$XDG_DATA_HOME/chatgpt-bridge/bridge.db`, file mode 0600.
 
 ```sql
 CREATE TABLE chats (
-  id            TEXT PRIMARY KEY,     -- conversation id from /c/<id>
+  id            TEXT PRIMARY KEY,
   title         TEXT NOT NULL,
   url           TEXT NOT NULL,
-  section       TEXT,                 -- pinned | project | recent
-  sidebar_rank  INTEGER,
-  content_hash  TEXT,                 -- of normalized turns at last fetch
+  section       TEXT,                 -- sidebar section at fetch time, if any
+  content_hash  TEXT,
   turn_count    INTEGER,
-  fetched_at    TEXT,                 -- NULL = listed, not fetched
-  last_seen_at  TEXT NOT NULL,        -- last sync that saw it in the sidebar
-  stale         INTEGER NOT NULL DEFAULT 0,
+  fetched_at    TEXT NOT NULL,        -- every cached chat has been fetched
   parse_version INTEGER NOT NULL
 );
 
 CREATE TABLE turns (
   chat_id      TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
   position     INTEGER NOT NULL,
-  role         TEXT NOT NULL CHECK (role IN ('user','assistant')),
+  role         TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
   markdown     TEXT NOT NULL,
   text         TEXT NOT NULL,
   alternatives INTEGER NOT NULL DEFAULT 1,
@@ -181,7 +213,7 @@ CREATE TABLE turns (
 
 CREATE TABLE attachments (
   chat_id   TEXT NOT NULL,
-  position  INTEGER NOT NULL,         -- turn position
+  position  INTEGER NOT NULL,
   idx       INTEGER NOT NULL,
   name      TEXT,
   mime      TEXT,
@@ -194,99 +226,58 @@ CREATE VIRTUAL TABLE turns_fts USING fts5(
   text, content='turns', content_rowid='rowid', tokenize='trigram'
 );
 
-CREATE TABLE sync_runs (
+CREATE TABLE fetch_log (
   id          INTEGER PRIMARY KEY,
-  kind        TEXT NOT NULL,          -- full | incremental | single
-  started_at  TEXT NOT NULL,
-  finished_at TEXT,
-  status      TEXT NOT NULL,          -- running | ok | partial | failed | aborted
-  summary     TEXT                    -- JSON: counts, errors, timings
+  chat_id     TEXT NOT NULL,
+  fetched_at  TEXT NOT NULL,
+  status      TEXT NOT NULL,          -- ok | unchanged | failed
+  detail      TEXT
 );
 
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
--- keys: schema_version, last_full_sync, last_incremental_sync
 ```
 
-Notes:
-- FTS triggers keep `turns_fts` in sync with `turns` (insert, update, delete).
-- `parse_version` lets a parser fix re-fetch only affected chats.
-- `content_hash` covers `markdown` for all turns, so formatting changes count as updates.
-- Messages have no timestamps in the page, so none are stored.
+Changes from the previous schema: `stale`, `last_seen_at`, `sidebar_rank`, and
+`sync_runs` are dropped; `fetch_log` records individual fetches. This is a
+schema change, so the version goes to 2 with a migration that discards old
+backfilled data (the current cache is already cleared).
 
-## 8. Sync design
+## 8. Interfaces
 
-### 8.1 Locking
-- An exclusive file lock at `$XDG_RUNTIME_DIR` or the data dir (`sync.lock`), via `fcntl.flock` (Windows: `msvcrt.locking`).
-- A second sync exits with a clear "sync already running" message (CLI) or error (MCP). Reads are never blocked.
-- A stale lock from a crashed process is released automatically (the OS releases `flock` on process exit).
-
-### 8.2 Full sync (`sync --full`, or first run)
-1. Reachability and login check.
-2. Load the full sidebar; record every listed chat.
-3. For each chat not current: open a background tab, load fully (F-25), extract (§6), validate, write in one transaction, close the tab, then wait the jittered delay.
-4. Final status `ok`, or `partial` if any chat failed. Failed chats are retried first on the next run.
-
-Estimate: 300 chats at roughly 3 s each plus page time ≈ 15–20 minutes. Runs unattended.
-
-### 8.3 Incremental sync (default)
-1. Reachability and login check; load the sidebar.
-2. **New:** IDs not in the cache, fetched.
-3. **Moved:** walk Recents from the top until K consecutive known chats (default K=10) with matching rank and title are found. Refetch the chats above that point.
-4. **Retitled:** a changed title triggers a refetch of that chat.
-5. Hash check: rewrite turns only when `content_hash` changes.
-6. Update `last_incremental_sync`. A full sync also updates `last_full_sync`.
-
-Known limit: a message added to an old chat that doesn't move in the sidebar can be missed by incremental sync. `sync --full` catches everything and is the fallback. `doctor` reports how many days since the last full sync.
-
-### 8.4 Failure rules
-| Situation | Behavior |
-|---|---|
-| One chat fails (drift, timeout) | Record the error, continue, mark run `partial` |
-| Browser disconnects | Stop, mark `aborted`, keep committed chats |
-| Login wall | Stop, mark `failed`, tell the user to log in |
-| Repeated drift (3 chats in a row) | Stop, mark `failed`; likely a page change |
-| Throttling (blank pages, repeated errors) | Stop, back off longer next run, report |
-| Ctrl-C | Finish the current chat's commit, then stop cleanly |
-
-### 8.5 Stale and deleted chats
-- A chat missing from a full sync's sidebar gets `stale = 1` and keeps its content.
-- If it reappears, `stale` clears.
-- Nothing is deleted automatically (A6). `reset` is the only deletion, and it removes everything.
-
-## 9. Interfaces
-
-### 9.1 CLI
+### 8.1 CLI
 
 ```
 chatgpt-bridge status
 chatgpt-bridge doctor
-chatgpt-bridge sync [--full] [--limit N]
-chatgpt-bridge list [--section pinned|project|recent] [--stale] [--unfetched] [--json]
-chatgpt-bridge show <id|url> [--format text|md|json]
-chatgpt-bridge search <query> [--chat ID] [--section S] [--since DATE] [--limit N] [--json]
-chatgpt-bridge config [--show]
+chatgpt-bridge chats [--cached] [--limit N] [--json]
+chatgpt-bridge fetch <url|id|title> [--refresh] [--json]
+chatgpt-bridge show <url|id|title> [--format text|md|json]
+chatgpt-bridge search <query> [--chat TARGET] [--limit N] [--json]
+chatgpt-bridge forget <url|id|title> [--yes]
 chatgpt-bridge export-raw [--out FILE]
 chatgpt-bridge reset [--yes]
+chatgpt-bridge config --show
 chatgpt-bridge version
-chatgpt-bridge send ...            # v2, not built
 ```
 
-- `--json` on every read command, with a stable schema versioned in the output.
-- Exit codes: `0` ok, `1` generic error, `2` usage, `3` browser unreachable, `4` drift, `5` not found, `6` login required, `7` sync already running, `8` cache error.
-- Commands that delete data prompt unless `--yes` is given.
+Exit codes: `0` ok, `1` error, `2` usage, `3` browser unreachable, `4` parse
+drift, `5` not found, `6` login required, `7` ambiguous target, `8` cache error.
 
-### 9.2 MCP server
+`forget` and `reset` prompt unless `--yes`.
+
+### 8.2 MCP server
 
 | Tool | Input | Output |
 |---|---|---|
-| `status` | — | browser reachable, login, counts, last syncs |
+| `status` | — | cache counts, last fetch, log path |
 | `doctor` | — | pass/fail checks |
-| `list_chats` | `section?`, `stale?`, `limit?` | `[{id, title, url, section, stale}]` |
-| `search_chats` | `query`, `chat_id?`, `section?`, `since?`, `limit?` | `[{chat_id, title, snippet, position, role}]` |
-| `get_chat` | `chat_id` or `url`, `format?` | `{id, title, url, turns:[{position, role, content, alternatives, attachments}]}` |
-| `sync_chats` | `full?`, `limit?` | run summary |
+| `chats` | `cached?`, `limit?` | visible sidebar list, or the cached list |
+| `fetch_chat` | `target`, `refresh?` | the conversation, fetched or refreshed |
+| `get_chat` | `target`, `format?` | cached conversation only; error explains `fetch_chat` |
+| `search_chats` | `query`, `chat?`, `limit?` | hits with snippets over cached chats |
+| `forget_chat` | `target`, `confirm` | removal result; requires `confirm=true` |
 
-**Untrusted-content envelope:** every tool that returns chat text wraps it as:
+Every tool returning chat text wraps it:
 
 ```json
 { "trust": "untrusted_user_content",
@@ -294,183 +285,131 @@ chatgpt-bridge send ...            # v2, not built
   "data": { ... } }
 ```
 
-Tool descriptions say the same. Chat text is never used to choose tool calls by this server.
+`fetch_chat`'s description tells the model to use it when the user asks to
+retrieve a chat, and to use the returned plan or content as input for the work.
+
+## 9. ChatGPT adapter
+
+- **Sidebar lookup:** `nav[aria-label="Chat history"]`, links
+  `a[href^="/c/"]`, read once, no scrolling. Used only to turn a title into an
+  ID.
+- **Chat page:** `h4[data-conversation-role]` marks each message; the message
+  element is its next sibling. HTML is converted to markdown in Python.
+- **Code blocks:** `div[data-code-block]` header supplies the language label.
+- **Branches:** best-effort `n / m` indicator; otherwise 1.
+- **Long chats:** scroll to top and trigger any "load earlier" control until the
+  message count stabilises.
+- **Validation:** messages must alternate user/assistant and be non-empty;
+  otherwise `ParseDriftError`, and nothing is stored.
+- All selectors and labels live in `adapters/chatgpt.py`.
 
 ## 10. Browser layer
 
-- `playwright.chromium.connect_over_cdp(url)`. Playwright's bundled browsers aren't needed; only the library is.
+- `playwright.chromium.connect_over_cdp(url)`.
 - Reachability: `GET <url>/json/version`, 2 s timeout.
-- Each command opens one connection and reuses it for the run.
-- Tabs: open with `new_page`, load, extract, close in `finally`. Track the app's tab IDs; on crash, close only those.
-- Never call `browser.close()`.
-- Login detection: no sidebar and a login/sign-up control present → login-required error.
-- Setup: the browser must be started with `--remote-debugging-port=<port>`. Recent Chrome versions refuse this flag on the default profile, so some setups need a separate profile directory. The README documents the commands per OS.
-- Brave works on port 9222 on this machine.
+- Own tabs only, closed in `finally`; never `browser.close()`.
+- Login detection: no sidebar and a login control present → login-required error.
+- Setup: browser started with `--remote-debugging-port`. Recent Chrome versions
+  need a separate `--user-data-dir`; the README gives commands per OS. Brave
+  works on 9222 on this machine.
 
 ## 11. Configuration
 
-Precedence: flags > environment > config file > defaults. `config --show` prints the source of each value.
-
-`$XDG_CONFIG_HOME/chatgpt-bridge/config.toml`:
+Precedence: flags > environment > config file > defaults.
 
 ```toml
 [browser]
 cdp_url = "http://127.0.0.1:9222"
 
 [pacing]
-min_delay_s = 2.0
-max_delay_s = 4.0
+min_delay_s = 1.0
+max_delay_s = 2.0
 
-[sync]
-recent_window = 10
-lock_timeout_s = 0          # 0 = fail immediately if locked
+[lookup]
+limit = 50          # sidebar entries read when resolving a title
 
 [logging]
-level = "info"              # info | debug (debug still never logs chat text)
+level = "info"
 ```
 
-Environment: `CHATGPT_BRIDGE_CDP_URL`, `CHATGPT_BRIDGE_DATA_DIR`, `CHATGPT_BRIDGE_CONFIG`.
+Environment: `CHATGPT_BRIDGE_CDP_URL`, `CHATGPT_BRIDGE_DATA_DIR`,
+`CHATGPT_BRIDGE_CONFIG`. Paths follow `platformdirs`.
 
-Paths follow `platformdirs`: data, config, cache, and log directories per OS.
+## 12. Error handling
 
-## 12. Schema migrations
+| Condition | Behaviour |
+|---|---|
+| Browser unreachable | Exit 3 with the start-up command |
+| Not logged in | Exit 6: log in, retry |
+| Title ambiguous | Exit 7 with up to five candidates and their IDs |
+| Title not visible | Exit 5, suggest `chats` or a URL |
+| Chat not available | Exit 5, nothing stored |
+| Selector drift | Exit 4 with the chat ID and what was expected |
+| Chat not cached (`show`/`get_chat`) | Exit 5, tell the caller to fetch it |
 
-- Numbered SQL files in `src/chatgpt_bridge/migrations/` (`001_init.sql`, `002_...`).
-- Current version in `PRAGMA user_version`, also reported by `version`.
-- Before any migration, copy the database to `bridge.db.bak-<version>`, run the migration in a transaction, verify, then delete the backup only on the next successful sync. (Keeps one fallback.)
-- A database newer than the app refuses to open, with a message to upgrade.
-- Parser changes use `parse_version`, not migrations.
+## 13. Testing
 
-## 13. Logging and observability
+- **Unit, no browser:** markdown conversion, resolution rules (URL, ID, prefix,
+  exact title, substring, ambiguous, missing), store and FTS behaviour,
+  migrations, config precedence, CLI output and exit codes, MCP envelopes.
+- **Fetch, fake source:** cached hit, `--refresh` unchanged, `--refresh` changed,
+  parse failure stores nothing, browser failure stores nothing.
+- **Live (`pytest -m live`):** real CDP browser, read-only. Fetch one named chat,
+  confirm code blocks and tables survive, confirm `doctor` passes.
+- Fixtures sanitised; no real chat content committed.
+- Gates: `ruff`, `mypy --strict` on `parse`, `store`, `query`, `resolve`, and
+  `pytest`.
 
-- Structured log file in the platform log directory, rotated at 5 MB, 3 files kept.
-- Logs record: command, timing, counts, chat IDs, error types, selector names that failed.
-- Logs never record message text, titles, or URLs at `info`. `debug` adds timing and DOM selector details, still without chat text.
-- `doctor` and `status` print the log path.
-- Exit codes and sync summaries are the user-facing diagnostics.
+## 14. Security and privacy
 
-## 14. Errors and messages
+- Local only; no listener, no daemon, no telemetry.
+- No credential access.
+- Database, logs, and exports user-only.
+- Chat text reaches the model only through an explicit `fetch_chat` or
+  `get_chat` call, or a CLI command you ran.
+- Page content is data, never executed, never obeyed.
+- `forget` and `reset` are the only deletion paths, and both prompt.
 
-- Every error has: what happened, what it means, and what to do next.
-- Example: `browser unreachable at http://127.0.0.1:9222. Start your browser with --remote-debugging-port=9222 (see README §Setup).`
-- Drift errors include chat ID, the expected label or selector, and what was found.
+## 15. Packaging
 
-## 15. Security and privacy
+- Package `chatgpt-bridge`, console scripts `chatgpt-bridge` and
+  `chatgpt-bridge-mcp`.
+- `uv tool install ~/projects/chatgpt-bridge`.
+- Semantic versions; `CHANGELOG.md` per version.
+- OpenCode config uses `chatgpt-bridge-mcp` from PATH; enable per session.
 
-- No credentials handled. The browser's own session is used.
-- Local only. No listener, no daemon, no telemetry.
-- Database, logs, and config are user-only readable.
-- Page content is data: parsed as text, never executed, never used as instructions (§9.2).
-- Chat text leaves the machine only when a tool returns it to an enabled MCP client, or when the user copies it.
-- `reset` is the only deletion path, and it prompts.
-- Dependencies pinned in `uv.lock`; updated deliberately.
+## 16. Milestones
 
-## 16. Packaging and distribution
+Status as of 2026-10-31: milestones 1–12 are implemented and verified. The
+session-level state lives in `docs/HANDOFF.md`; this list records scope.
 
-- Python package `chatgpt-bridge` with two console scripts: `chatgpt-bridge` and `chatgpt-bridge-mcp`.
-- Install from the repo: `uv tool install --editable ~/projects/chatgpt-bridge` (development) or `uv tool install ~/projects/chatgpt-bridge` (normal use).
-- OpenCode config points at the installed `chatgpt-bridge-mcp` on PATH (no hard-coded venv path).
-- Versioning: semantic versions. `CHANGELOG.md` updated for each version. Schema and parser versions are separate from the app version.
-- Release process (local): tag in git, run the full test suite, reinstall with `uv tool install`.
-- No PyPI publish in v1 (A3).
+1. **Scaffold** — repo, tooling, both entry points. ✅
+2. **Paths, config, logging** — `config --show`, log file. ✅
+3. **Store and migrations** — schema v2, FTS, fetch log. ✅
+4. **Browser layer** — CDP, own tabs, error mapping. ✅
+5. **Parser** — HTML → markdown/text, language labels, drift checks. ✅
+6. **Adapter** — sidebar lookup and chat extraction, verified live. ✅
+7. **Resolution** — URL, ID, prefix, title; ambiguous and missing cases. ✅
+8. **Fetch service** — cache hit, refresh, transaction, fetch log. ✅
+9. **Query and CLI** — `chats`, `fetch`, `show`, `search`, `forget`, `status`,
+   `doctor`, `export-raw`, `reset`. ✅
+10. **MCP server** — seven tools, envelope, tool descriptions. ✅
+11. **Live acceptance** — fetch one named chat end to end; cache hit without a
+    browser; refresh reports changes; opt-in live tests pass. ✅
+12. **Docs and wiring** — README, CHANGELOG, `docs/HANDOFF.md`, AGENTS.md docs
+    reference. OpenCode entry documented, not yet installed. ✅
 
-## 17. Platform support
+Deviations recorded during the rework:
 
-| Platform | v1 status | Notes |
-|---|---|---|
-| Linux (Fedora) | Verified target | Brave on port 9222 |
-| macOS | Documented, untested | Paths via platformdirs; CDP setup in README |
-| Windows | Documented, untested | `fcntl` lock replaced by `msvcrt`; CDP setup in README |
+- The sidebar scroll capability is kept in the adapter but is off by default and
+  unused; discovery is lookup-only.
+- Alternatives counts are best-effort and were 1 for every message in the
+  verified chats.
+- `doctor` does not parse a sample chat by default, so it never fetches.
 
-Platform-specific code is limited to the lock and path handling.
+## 17. Future
 
-## 18. Testing
-
-- **Unit (no browser):** parsing (markdown conversion, labels, UI-chrome stripping, attachments, branch counts) on sanitized fixtures; store CRUD; FTS queries including trigram edge cases and short-query fallback; config precedence; migrations up and down on copies; lock behavior.
-- **Sync (fake source):** full sync; incremental with new, moved, and retitled chats; hash-unchanged skip; interruption and resume; partial failure; stale marking and recovery; repeated-drift stop.
-- **CLI:** each command in-process; JSON schema; exit codes.
-- **MCP:** each tool in-process; envelope present on chat-text tools; no write paths exposed.
-- **Live (`pytest -m live`):** real browser, read-only. Checks sidebar count is plausible, a long chat loads completely, code blocks survive, `doctor` passes.
-- **Performance:** timing test on a 200-turn fixture against N-09.
-- **Fixtures:** sanitized. Real personal content never committed.
-- **Quality gates:** `ruff`, `mypy --strict` on `parse`, `store`, `sync`, `query`; `pytest` with coverage target 85% on those modules.
-
-## 19. Project layout
-
-```
-chatgpt-bridge/
-├── PLAN.md
-├── AGENTS.md            # guidance for coding agents: hard rules, commands, conventions
-├── README.md
-├── CHANGELOG.md
-├── pyproject.toml
-├── uv.lock
-├── src/chatgpt_bridge/
-│   ├── __init__.py
-│   ├── config.py
-│   ├── paths.py
-│   ├── logging_setup.py
-│   ├── browser.py
-│   ├── adapters/chatgpt.py
-│   ├── parse.py            # DOM -> markdown/text, turn splitting, drift checks
-│   ├── store.py            # connection, transactions, FTS
-│   ├── migrations/         # 001_init.sql, ...
-│   ├── lock.py
-│   ├── sync.py
-│   ├── query.py
-│   ├── doctor.py
-│   ├── maintenance.py      # reset, export-raw
-│   ├── cli.py
-│   └── mcp_server.py
-└── tests/
-    ├── fixtures/
-    ├── test_parse.py
-    ├── test_store.py
-    ├── test_migrations.py
-    ├── test_lock.py
-    ├── test_sync.py
-    ├── test_query.py
-    ├── test_cli.py
-    ├── test_mcp.py
-    ├── test_maintenance.py
-    ├── test_performance.py
-    └── test_live.py
-```
-
-## 20. Milestones
-
-1. **Scaffold:** repo, `AGENTS.md`, `pyproject.toml`, `uv`, ruff/mypy/pytest, both console scripts start.
-   - Done (2026-10-31): `mcp` 2.x is installed, so the server uses `MCPServer` from `mcp.server.mcpserver` (v2 renamed `FastMCP`). Dependency floor is `mcp>=2`.
-2. **Paths, config, logging:** `paths.py`, `config.py`, `logging_setup.py`, `version`, `config --show`.
-3. **Store and migrations:** schema 001, migration runner with backups, FTS triggers, tests.
-4. **Browser layer:** CDP connect, reachability, own tabs, login detection, error mapping.
-   - Done (2026-10-31): `probe()` checks `/json/version`; `open_tab()` opens and always closes its own tab; never calls `browser.close()`.
-5. **Parser:** DOM → markdown/text, branches, attachments, chrome stripping; sanitized fixtures; unit tests.
-   - Done (2026-10-31): message HTML is extracted in-page and converted by a pure Python HTML→markdown renderer. Code-block language is read from the `data-code-block` header label (verified: `Bash` → ```bash). Branch count is best-effort from a `n / m` indicator; no such control existed in the verified chats.
-6. **Adapter, live:** sidebar scroll and chat load on the real Brave session; verify long-chat completeness and code block fidelity.
-   - Done (2026-10-31): live run returned 16 chats and an 8-turn chat with code blocks and tables intact.
-   - **Discovery decision:** `chatgpt.com/library` renders the same 16 chat links as the sidebar, so discovery stays on the sidebar.
-   - **Known limitation:** chats inside a Project (`cjc-flow`) are not listed as `/c/` links while collapsed; expanding the project in a scripted tab did not reveal them. Project chats are therefore out of v1 discovery scope.
-7. **Sync:** lock, full sync, incremental sync, stale marking, resume; fake-source tests.
-8. **Query and CLI:** `list`, `show`, `search`, `status`, `doctor`, `sync`, `export-raw`, `reset`.
-9. **MCP server:** all six tools, envelope, tool descriptions.
-10. **Performance and hardening:** N-09/N-10 checks; drift and throttling tests.
-11. **Live acceptance:** full sync of the real account; incremental run with no new activity (should be near-empty); compare a sample of chats against the page.
-12. **Docs and wiring:** README (setup per OS, troubleshooting), CHANGELOG 1.0.0, OpenCode entry, `uv tool install`.
-13. **Second-browser check:** confirm the tool works with a second Chromium browser on the same machine.
-
-## 21. Future (not built)
-
-- `send_message` with a confirmation gate (v2).
+- `send_message` with confirmation.
 - Create a new chat.
-- Full branch storage (the `alternatives` count is the hook).
-- Attachment file downloads.
-- Scheduled background sync (only if requested).
-- Model and mode selection.
-
-## 22. Decisions (confirmed)
-
-- **A1–A8 accepted as written** (§2).
-- **Discovery:** during milestone 6, compare ChatGPT's search or library view against the sidebar. If the search or library view lists chats more completely, discovery switches to it. The sidebar stays as the fallback. Record the result in the plan's changelog.
-
-No open decisions remain. Milestone 1 can start.
+- Optional bulk discovery, if you ever want it, behind an explicit flag and off
+  by default.

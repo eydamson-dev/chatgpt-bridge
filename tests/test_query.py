@@ -6,83 +6,108 @@ from pathlib import Path
 import pytest
 
 from chatgpt_bridge import maintenance, query, store
-from chatgpt_bridge.store import Turn
+
+UUID = "6ae5de7d-e0f8-83ec-9a71-cd2780e3bf72"
 
 
 @pytest.fixture
 def db(tmp_path: Path) -> Path:
     path = tmp_path / "bridge.db"
     conn = store.connect(path)
-    store.upsert_listed_chats(
-        conn,
-        [
-            store.ChatRef(
-                id="c1", title="Fedora notes", url="u1", section="recents", sidebar_rank=0
-            ),
-            store.ChatRef(id="c2", title="Other", url="u2", section="pinned", sidebar_rank=1),
-        ],
-        seen_at=store.utc_now(),
-    )
     turns = [
-        Turn(
+        store.Turn(
             role="user",
             markdown="how do I **install** pkg-config?",
             text="how do I install pkg-config?",
         ),
-        Turn(
+        store.Turn(
             role="assistant",
             markdown="`dnf install pkgconf`",
             text="dnf install pkgconf",
             alternatives=2,
         ),
     ]
-    store.save_chat(conn, "c1", turns, store.content_hash(turns))
+    store.save_chat(
+        conn,
+        chat_id=UUID,
+        title="Fedora notes",
+        url=f"https://chatgpt.com/c/{UUID}",
+        section="recents",
+        turns=turns,
+        hash_value=store.content_hash(turns),
+    )
+    store.save_chat(
+        conn,
+        chat_id="aaaa1111-2222-3333-4444-555566667777",
+        title="Lenovo ThinkPad Review",
+        url="https://chatgpt.com/c/aaaa",
+        section="recents",
+        turns=[store.Turn(role="user", markdown="T14", text="T14")],
+        hash_value="h",
+    )
+    store.record_fetch(conn, UUID, "ok")
     conn.close()
     return path
 
 
-def test_list_chats_filters(db: Path) -> None:
-    assert len(query.list_chats(db_path=db)) == 2
-    assert [c.id for c in query.list_chats(db_path=db, section="pinned")] == ["c2"]
-    assert [c.id for c in query.list_chats(db_path=db, unfetched=True)] == ["c2"]
-    assert query.list_chats(db_path=db, limit=1)
+def test_list_cached(db: Path) -> None:
+    assert len(query.list_cached(db_path=db)) == 2
+    assert len(query.list_cached(db_path=db, limit=1)) == 1
 
 
-def test_get_chat_returns_turns(db: Path) -> None:
-    chat = query.get_chat("c1", db_path=db)
-    assert chat.title == "Fedora notes"
-    assert len(chat.turns) == 2
+def test_get_chat_by_id_prefix_and_title(db: Path) -> None:
+    assert query.get_chat(UUID, db_path=db).title == "Fedora notes"
+    assert query.get_chat("6ae5de7d", db_path=db).title == "Fedora notes"
+    assert query.get_chat("fedora", db_path=db).id == UUID
 
 
-def test_get_chat_missing(db: Path) -> None:
-    with pytest.raises(query.NotFound, match="not in the cache"):
-        query.get_chat("nope", db_path=db)
+def test_get_chat_missing_hints_at_fetch(db: Path) -> None:
+    with pytest.raises(query.NotFound) as excinfo:
+        query.get_chat("nothing", db_path=db)
+    assert "chatgpt-bridge fetch" in str(excinfo.value)
 
 
-def test_get_chat_unfetched(db: Path) -> None:
-    with pytest.raises(query.NotFound, match="not fetched"):
-        query.get_chat("c2", db_path=db)
+def test_get_chat_ambiguous(db: Path) -> None:
+    with pytest.raises(query.NotFound, match="matches several"):
+        query.get_chat("a", db_path=db)
 
 
-def test_search_returns_hits(db: Path) -> None:
+def test_search_hits(db: Path) -> None:
     hits = query.search("pkgconf", db_path=db)
     assert len(hits) == 1
-    assert hits[0].chat_id == "c1"
+    assert hits[0].chat_id == UUID
 
 
-def test_search_limit_is_capped(db: Path) -> None:
-    hits = query.search("do", db_path=db, limit=10_000)
-    assert isinstance(hits, list)
+def test_search_scoped_by_title(db: Path) -> None:
+    assert query.search("pkgconf", db_path=db, chat="fedora")
+    assert query.search("pkgconf", db_path=db, chat="lenovo") == []
 
 
-def test_counts_and_last_run(db: Path) -> None:
+def test_search_scope_missing_chat(db: Path) -> None:
+    with pytest.raises(query.NotFound):
+        query.search("x", db_path=db, chat="nothing")
+
+
+def test_counts_and_last_fetch(db: Path) -> None:
     counts = query.counts(db_path=db)
-    assert counts.chats == 2
-    assert query.last_run(db_path=db) is None
+    assert (counts.chats, counts.turns) == (2, 3)
+    entry = query.last_fetch(db_path=db)
+    assert entry is not None and entry.chat_id == UUID
+
+
+def test_forget(db: Path) -> None:
+    removed = query.forget("fedora", db_path=db)
+    assert removed == UUID
+    assert query.counts(db_path=db).chats == 1
+
+
+def test_forget_missing(db: Path) -> None:
+    with pytest.raises(query.NotFound):
+        query.forget("nothing", db_path=db)
 
 
 def test_render_text_and_markdown(db: Path) -> None:
-    chat = query.get_chat("c1", db_path=db)
+    chat = query.get_chat("fedora", db_path=db)
     text = query.render_text(chat)
     assert "Fedora notes" in text and "[1] You" in text and "[2] ChatGPT" in text
     markdown = query.render_markdown(chat)
@@ -91,9 +116,8 @@ def test_render_text_and_markdown(db: Path) -> None:
 
 
 def test_envelope_shape(db: Path) -> None:
-    chat = query.get_chat("c1", db_path=db)
-    payload = query.envelope(chat).as_dict()
-    assert payload["id"] == "c1"
+    payload = query.envelope(query.get_chat("fedora", db_path=db)).as_dict()
+    assert payload["id"] == UUID
     turns = payload["turns"]
     assert isinstance(turns, list)
     assert turns[1]["alternatives"] == 2
@@ -101,18 +125,17 @@ def test_envelope_shape(db: Path) -> None:
 
 
 def test_envelope_can_omit_markdown(db: Path) -> None:
-    payload = query.envelope(query.get_chat("c1", db_path=db), include_markdown=False).as_dict()
+    payload = query.envelope(query.get_chat("fedora", db_path=db), include_markdown=False).as_dict()
     assert "markdown" not in payload["turns"][0]
 
 
 def test_export_raw_writes_jsonl(db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CHATGPT_BRIDGE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CHATGPT_BRIDGE_DATA_DIR", str(db.parent))
     out = tmp_path / "dump.jsonl"
     target = maintenance.export_raw(out)
     lines = target.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
-    first = json.loads(lines[0])
-    assert set(first) >= {"id", "title", "turns"}
+    assert set(json.loads(lines[0])) >= {"id", "title", "turns"}
 
 
 def test_reset_clears_cache(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:

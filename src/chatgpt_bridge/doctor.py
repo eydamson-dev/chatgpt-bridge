@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from chatgpt_bridge import __version__, paths, store
@@ -43,7 +42,8 @@ class DoctorReport:
         }
 
 
-def run_checks(settings: Settings, *, sample_chat: bool = True) -> DoctorReport:
+def run_checks(settings: Settings, *, sample_chat: bool = False) -> DoctorReport:
+    """Check every layer without fetching anything into the cache."""
     report = DoctorReport()
     report.checks.append(_check_config(settings))
     report.checks.append(_check_database())
@@ -59,13 +59,13 @@ def run_checks(settings: Settings, *, sample_chat: bool = True) -> DoctorReport:
     try:
         adapter = ChatGPTAdapter(browser, page_delay_s=0.3)
         try:
-            chats = adapter.list_chats(scroll=False)
+            refs = adapter.list_chats(scroll=False, limit=settings.lookup_limit)
         except LoginRequired as exc:
             report.checks.append(Check("login", False, str(exc)))
             return report
-        report.checks.append(Check("sidebar", True, f"{len(chats)} chats listed without scrolling"))
-        if sample_chat and chats:
-            _check_parse(adapter, chats[0].id, report)
+        report.checks.append(Check("sidebar", True, f"{len(refs)} chats visible for lookup"))
+        if sample_chat and refs:
+            _check_parse(adapter, refs[0].id, report)
     except BrowserError as exc:
         report.checks.append(Check("page", False, str(exc)))
     finally:
@@ -82,7 +82,6 @@ def _check_config(settings: Settings) -> Check:
 
 
 def _check_database() -> Check:
-    path = paths.db_path()
     try:
         conn = store.connect()
     except store.StoreError as exc:
@@ -95,7 +94,7 @@ def _check_database() -> Check:
     return Check(
         "database",
         True,
-        f"{path} schema={version} chats={counts.chats} messages={counts.turns}",
+        f"{paths.db_path()} schema={version} cached_chats={counts.chats} messages={counts.turns}",
     )
 
 
@@ -111,9 +110,3 @@ def _check_parse(adapter: ChatGPTAdapter, chat_id: str, report: DoctorReport) ->
     report.checks.append(
         Check("parser", True, f"sample chat {chat_id[:8]} parsed {len(chat.turns)} messages")
     )
-
-
-def log_path() -> Path:
-    from chatgpt_bridge.logging_setup import log_file
-
-    return log_file()
