@@ -165,12 +165,22 @@ Nothing is in flight. All twelve milestones in `PLAN.md` §16 are done, the
 local store is empty, and `uv run pytest` (196 tests) plus `uv run pytest -m live`
 (2 tests) pass.
 
-The next milestone is whatever the user picks. Suggestions:
+**Next phase, milestone 1 (recommended): `send_message`.** The user's workflow
+half-works today: retrieval is done, sending is not, so "ask ChatGPT to make a
+plan" still needs the web UI. Recommended because it unlocks the other half.
 
-1. `--json` on `fetch` progress output (results already support it).
-2. Design `send_message` (later feature) — needs an explicit confirmation gate
-   and a decision on branch/new-chat behaviour before any code.
-3. Optional age-based purge for stored chats, if the store grows large.
+It is a **write path**, so it starts with design, not code, and needs explicit
+user approval on:
+
+1. Which target: an existing chat, a new chat, or both.
+2. The confirmation gate: interactive prompt in the CLI, `confirm=true` in MCP,
+   and what the error says when it is missing.
+3. Model and mode selection, or always the user's current defaults.
+4. Branch behaviour when a reply already exists: append, or refuse.
+5. Failure handling: the message is typed but the reply never arrives.
+
+Alternative first milestones, if the write path should stay closed:
+`--json` on `fetch` progress output, or an age-based purge for stored chats.
 
 ## Engineering vault
 
