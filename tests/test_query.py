@@ -39,10 +39,10 @@ def db(tmp_path: Path) -> Path:
     store.save_chat(
         conn,
         chat_id="aaaa1111-2222-3333-4444-555566667777",
-        title="Lenovo ThinkPad Review",
+        title="Sample hardware review",
         url="https://chatgpt.com/c/aaaa",
         section="recents",
-        turns=[store.Turn(role="user", markdown="T14", text="T14")],
+        turns=[store.Turn(role="user", markdown="Laptop A", text="Laptop A")],
         hash_value="h",
     )
     store.record_fetch(conn, UUID, "ok")
@@ -80,7 +80,7 @@ def test_search_hits(db: Path) -> None:
 
 def test_search_scoped_by_title(db: Path) -> None:
     assert query.search("pkgconf", db_path=db, chat="fedora")
-    assert query.search("pkgconf", db_path=db, chat="lenovo") == []
+    assert query.search("pkgconf", db_path=db, chat="sample") == []
 
 
 def test_search_scope_missing_chat(db: Path) -> None:

@@ -48,7 +48,7 @@ def test_target_id_recognises_ids_and_urls(value: str, expected: str) -> None:
 
 
 def test_target_id_returns_none_for_titles() -> None:
-    assert target_id("Lenovo ThinkPad Review") is None
+    assert target_id("Sample hardware review") is None
     assert target_id("short") is None
 
 
@@ -58,27 +58,27 @@ def test_target_id_rejects_other_hosts() -> None:
 
 
 def test_cache_resolution_by_full_id() -> None:
-    resolved = resolve_from_cache(UUID, [summary(UUID, "Lenovo")])
+    resolved = resolve_from_cache(UUID, [summary(UUID, "Sample")])
     assert resolved is not None
     assert resolved.id == UUID
     assert resolved.from_cache is True
 
 
 def test_cache_resolution_by_prefix() -> None:
-    resolved = resolve_from_cache("6ae5de7d", [summary(UUID, "Lenovo")])
+    resolved = resolve_from_cache("6ae5de7d", [summary(UUID, "Sample")])
     assert resolved is not None
     assert resolved.id == UUID
 
 
 def test_cache_resolution_by_exact_title() -> None:
-    resolved = resolve_from_cache("lenovo", [summary("c1", "Lenovo"), summary("c2", "Other")])
+    resolved = resolve_from_cache("sample", [summary("c1", "Sample"), summary("c2", "Other")])
     assert resolved is not None
     assert resolved.id == "c1"
 
 
 def test_cache_resolution_by_unique_substring() -> None:
     resolved = resolve_from_cache(
-        "ThinkPad", [summary("c1", "Lenovo ThinkPad Review"), summary("c2", "Other")]
+        "hardware", [summary("c1", "Sample hardware review"), summary("c2", "Other")]
     )
     assert resolved is not None
     assert resolved.id == "c1"
@@ -86,7 +86,9 @@ def test_cache_resolution_by_unique_substring() -> None:
 
 def test_cache_resolution_ambiguous_title() -> None:
     with pytest.raises(AmbiguousTarget) as excinfo:
-        resolve_from_cache("lenovo", [summary("c1", "Lenovo T14"), summary("c2", "Lenovo T14s")])
+        resolve_from_cache(
+            "sample", [summary("c1", "Sample laptop A"), summary("c2", "Sample laptop B")]
+        )
     assert len(excinfo.value.candidates) == 2
 
 
@@ -95,7 +97,7 @@ def test_cache_resolution_miss_returns_none() -> None:
 
 
 def test_listing_resolution_by_title() -> None:
-    resolved = resolve_with_listing("Lenovo ThinkPad Review", [ref("c1", "Lenovo ThinkPad Review")])
+    resolved = resolve_with_listing("Sample hardware review", [ref("c1", "Sample hardware review")])
     assert resolved.id == "c1"
     assert resolved.from_cache is False
 
@@ -107,7 +109,7 @@ def test_listing_resolution_by_url_not_in_list() -> None:
 
 def test_listing_resolution_ambiguous() -> None:
     with pytest.raises(AmbiguousTarget, match="several visible"):
-        resolve_with_listing("lenovo", [ref("c1", "Lenovo T14"), ref("c2", "Lenovo T14s")])
+        resolve_with_listing("sample", [ref("c1", "Sample laptop A"), ref("c2", "Sample laptop B")])
 
 
 def test_listing_resolution_missing_suggests_chats() -> None:

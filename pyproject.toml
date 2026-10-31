@@ -3,6 +3,8 @@ name = "chatgpt-bridge"
 version = "0.2.0"
 description = "Read and search your ChatGPT web conversations via a logged-in Chromium browser over CDP."
 readme = "README.md"
+license = { text = "MIT" }
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "mcp>=2.0",

@@ -37,10 +37,10 @@ def seeded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     store.save_chat(
         conn,
         chat_id="aaaa1111-2222-3333-4444-555566667777",
-        title="Lenovo ThinkPad Review",
+        title="Sample hardware review",
         url="https://chatgpt.com/c/aaaa1111-2222-3333-4444-555566667777",
         section="recents",
-        turns=[store.Turn(role="user", markdown="T14", text="T14")],
+        turns=[store.Turn(role="user", markdown="Laptop A", text="Laptop A")],
         hash_value="h",
     )
     conn.close()
@@ -66,7 +66,7 @@ def test_status_text(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
 def test_chats_cached(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["--json", "chats", "--stored"]) == EXIT_OK
     rows = json.loads(capsys.readouterr().out)
-    assert {r["title"] for r in rows} == {"Fedora notes", "Lenovo ThinkPad Review"}
+    assert {r["title"] for r in rows} == {"Fedora notes", "Sample hardware review"}
 
 
 def test_chats_cached_empty(
@@ -85,8 +85,8 @@ def test_show_text_by_prefix(seeded: Path, capsys: pytest.CaptureFixture[str]) -
 
 
 def test_show_by_title(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["show", "lenovo"]) == EXIT_OK
-    assert "Lenovo ThinkPad Review" in capsys.readouterr().out
+    assert main(["show", "sample"]) == EXIT_OK
+    assert "Sample hardware review" in capsys.readouterr().out
 
 
 def test_show_markdown(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -126,7 +126,7 @@ def test_search_no_matches_mentions_cache_size(
 
 
 def test_search_scoped_to_chat(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["--json", "search", "pkg-config", "--chat", "lenovo"]) == EXIT_OK
+    assert main(["--json", "search", "pkg-config", "--chat", "sample"]) == EXIT_OK
     assert json.loads(capsys.readouterr().out) == []
 
 

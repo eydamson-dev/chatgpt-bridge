@@ -163,10 +163,10 @@ def test_resolve_chat_id_ambiguous(conn) -> None:
 
 
 def test_find_by_title(conn) -> None:
-    seed(conn, "c1", "Lenovo ThinkPad Review")
+    seed(conn, "c1", "Sample hardware review")
     seed(conn, "c2", "Fedora notes")
     assert [c.id for c in store.find_by_title(conn, "fedora notes")] == ["c2"]
-    assert [c.id for c in store.find_by_title(conn, "Lenovo")] == ["c1"]
+    assert [c.id for c in store.find_by_title(conn, "Sample")] == ["c1"]
     assert store.find_by_title(conn, "nothing") == []
 
 

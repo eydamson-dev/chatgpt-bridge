@@ -208,6 +208,10 @@ and error types — never message text.
   terms. Use it on your own account, at a low rate.
 - **Platforms.** Verified on Linux with Brave. macOS and Windows are untested.
 
+## License
+
+MIT. See `LICENSE`.
+
 ## Development
 
 ```bash

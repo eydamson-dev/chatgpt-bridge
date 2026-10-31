@@ -57,8 +57,8 @@ def session_for(source: FakeSource):
 
 
 def test_fetch_by_title_uses_sidebar_then_stores(db: Path) -> None:
-    source = FakeSource([ChatRef(id=UUID, title="Lenovo ThinkPad Review", url="u")])
-    result = fetch_chat("Lenovo ThinkPad Review", db_path=db, session=session_for(source))
+    source = FakeSource([ChatRef(id=UUID, title="Sample hardware review", url="u")])
+    result = fetch_chat("Sample hardware review", db_path=db, session=session_for(source))
 
     assert result.outcome == "new"
     assert result.chat.id == UUID
@@ -115,12 +115,12 @@ def test_uncached_target_without_session_raises(db: Path) -> None:
 def test_ambiguous_title_raises_with_candidates(db: Path) -> None:
     source = FakeSource(
         [
-            ChatRef(id="c1", title="Lenovo T14", url="u"),
-            ChatRef(id="c2", title="Lenovo T14s", url="u"),
+            ChatRef(id="c1", title="Sample laptop A", url="u"),
+            ChatRef(id="c2", title="Sample laptop B", url="u"),
         ]
     )
     with pytest.raises(AmbiguousTarget) as excinfo:
-        fetch_chat("Lenovo", db_path=db, session=session_for(source))
+        fetch_chat("Sample", db_path=db, session=session_for(source))
     assert len(excinfo.value.candidates) == 2
     assert source.fetched == []
 
