@@ -177,7 +177,8 @@ The next milestone is whatever the user picks. Suggestions:
 Recorded (2026-10-31), for durable context rather than implementation detail:
 
 - `Projects/ChatGPT-Bridge.md` — purpose, repo, stack, status, decisions,
-  constraints.
+  constraints, and a **Traps** section for project-specific non-obvious
+  behaviour. Read the Traps section before changing the adapter, store, or tests.
 - `Lessons/MCP-Python-SDK-2-Renamed-FastMCP.md`
 - `Lessons/FTS5-Trigram-Snippet-Truncates.md`
 

@@ -12,6 +12,9 @@ user's chat history. The database is real storage, not a disposable cache.
 - **`docs/HANDOFF.md`** — current state, invariants, decisions, gotchas, next
   step. Read this at the start of every session, and update it at the end of
   every milestone.
+- **Engineering vault → `Projects/ChatGPT-Bridge.md`** — when the Obsidian tools
+  are available, read its **Traps** section before touching the adapter, the
+  store, or the tests. Project-specific traps belong there.
 - `PLAN.md` — the product plan and milestone list.
 - `README.md` — setup and troubleshooting for users.
 - `CHANGELOG.md` — user-visible changes per version.
@@ -81,6 +84,13 @@ uv run pytest -m live            # real browser, read-only; needs CDP reachable
   step, and anything durable you learned.
 - Update `PLAN.md` when a decision changes, and say what changed.
 - Update `CHANGELOG.md` for user-visible changes only.
+- **Record traps.** A non-obvious behaviour that would cost time again goes in
+  the vault, even when it is specific to this project:
+  - **project-specific** → the **Traps** section of
+    `Projects/ChatGPT-Bridge.md` (symptom, cause, fix; one bullet each);
+  - **reusable across projects** → a new note under `Lessons/`.
+  Do not wait to be asked, and do not record trivia or anything git already
+  explains.
 
 ## Vault
 
