@@ -444,8 +444,13 @@ chatgpt-bridge/
 2. **Paths, config, logging:** `paths.py`, `config.py`, `logging_setup.py`, `version`, `config --show`.
 3. **Store and migrations:** schema 001, migration runner with backups, FTS triggers, tests.
 4. **Browser layer:** CDP connect, reachability, own tabs, login detection, error mapping.
+   - Done (2026-10-31): `probe()` checks `/json/version`; `open_tab()` opens and always closes its own tab; never calls `browser.close()`.
 5. **Parser:** DOM → markdown/text, branches, attachments, chrome stripping; sanitized fixtures; unit tests.
+   - Done (2026-10-31): message HTML is extracted in-page and converted by a pure Python HTML→markdown renderer. Code-block language is read from the `data-code-block` header label (verified: `Bash` → ```bash). Branch count is best-effort from a `n / m` indicator; no such control existed in the verified chats.
 6. **Adapter, live:** sidebar scroll and chat load on the real Brave session; verify long-chat completeness and code block fidelity.
+   - Done (2026-10-31): live run returned 16 chats and an 8-turn chat with code blocks and tables intact.
+   - **Discovery decision:** `chatgpt.com/library` renders the same 16 chat links as the sidebar, so discovery stays on the sidebar.
+   - **Known limitation:** chats inside a Project (`cjc-flow`) are not listed as `/c/` links while collapsed; expanding the project in a scripted tab did not reveal them. Project chats are therefore out of v1 discovery scope.
 7. **Sync:** lock, full sync, incremental sync, stale marking, resume; fake-source tests.
 8. **Query and CLI:** `list`, `show`, `search`, `status`, `doctor`, `sync`, `export-raw`, `reset`.
 9. **MCP server:** all six tools, envelope, tool descriptions.
