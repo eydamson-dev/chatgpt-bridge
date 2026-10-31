@@ -397,7 +397,10 @@ def _cmd_reset(args: argparse.Namespace, resolved: config.Resolved) -> int:
             print("cancelled")
             return EXIT_OK
     maintenance.reset()
-    print("local store deleted")
+    if args.json:
+        print(json.dumps({"reset": True}))
+    else:
+        print("local store deleted")
     return EXIT_OK
 
 

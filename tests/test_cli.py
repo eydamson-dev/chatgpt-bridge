@@ -165,11 +165,17 @@ def test_export_raw(seeded: Path, tmp_path: Path, capsys: pytest.CaptureFixture[
     out = tmp_path / "dump.jsonl"
     assert main(["export-raw", "--out", str(out)]) == EXIT_OK
     assert len(out.read_text(encoding="utf-8").splitlines()) == 2
+    assert out.stat().st_mode & 0o077 == 0
 
 
 def test_reset_with_yes(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["reset", "--yes"]) == EXIT_OK
     assert "local store deleted" in capsys.readouterr().out
+
+
+def test_reset_json(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--json", "reset", "--yes"]) == EXIT_OK
+    assert json.loads(capsys.readouterr().out) == {"reset": True}
 
 
 def test_config_show(capsys: pytest.CaptureFixture[str]) -> None:

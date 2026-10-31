@@ -86,12 +86,11 @@ class Browser:
         except Exception as exc:  # playwright raises its own error types
             self._stop_playwright()
             raise BrowserUnreachable(f"could not attach to {self.cdp_url}: {exc}") from exc
-        log.info("attached to browser at %s", self.cdp_url)
+        log.info("attached to browser")
 
     def close(self) -> None:
         # Disconnect only: never call browser.close(), which would close the user's browser.
         if self._browser is not None:
-            # Disconnect only. Never browser.close(): that would close the user's browser.
             with contextlib.suppress(Exception):
                 self._browser.close()
             self._browser = None

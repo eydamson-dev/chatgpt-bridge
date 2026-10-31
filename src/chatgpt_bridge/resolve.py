@@ -93,17 +93,17 @@ def resolve_from_cache(target: str, summaries: list[ChatSummary]) -> Resolved | 
             return _resolved(prefixed[0])
         if len(prefixed) > 1:
             raise AmbiguousTarget(
-                f"{candidate!r} matches several cached chats",
+                f"{candidate!r} matches several stored chats",
                 [(s.id, s.title) for s in prefixed[:5]],
             )
-        return None
+        # An all-hex word such as "decade" is still a title when no ID matches.
 
     exact = [summary for summary in summaries if summary.title.lower() == candidate.lower()]
     if len(exact) == 1:
         return _resolved(exact[0])
     if len(exact) > 1:
         raise AmbiguousTarget(
-            f"several cached chats are titled {candidate!r}",
+            f"several stored chats are titled {candidate!r}",
             [(s.id, s.title) for s in exact[:5]],
         )
 
@@ -112,7 +112,7 @@ def resolve_from_cache(target: str, summaries: list[ChatSummary]) -> Resolved | 
         return _resolved(partial[0])
     if len(partial) > 1:
         raise AmbiguousTarget(
-            f"{candidate!r} matches several cached chats",
+            f"{candidate!r} matches several stored chats",
             [(s.id, s.title) for s in partial[:5]],
         )
     fallback = by_id.get(candidate)
@@ -123,6 +123,7 @@ def resolve_with_listing(target: str, refs: list[ChatRef]) -> Resolved:
     """Resolve against the visible sidebar list. Raises TargetNotFound/Ambiguous."""
     candidate = target.strip()
     direct = target_id(candidate)
+    id_like_miss = False
     if direct is not None:
         matches = [ref for ref in refs if ref.id == direct]
         if matches:
@@ -138,7 +139,8 @@ def resolve_with_listing(target: str, refs: list[ChatRef]) -> Resolved:
         # A full ID that is not in the visible list can still be fetched directly.
         if UUID_RE.match(direct):
             return Resolved(id=direct, title=direct, url=f"https://chatgpt.com/c/{direct}")
-        raise TargetNotFound(f"chat {candidate!r} is not in the visible chat list")
+        # An all-hex word such as "decade" may be a title, not an ID prefix.
+        id_like_miss = True
 
     exact = [ref for ref in refs if ref.title.lower() == candidate.lower()]
     if len(exact) == 1:
@@ -157,6 +159,8 @@ def resolve_with_listing(target: str, refs: list[ChatRef]) -> Resolved:
             f"{candidate!r} matches several visible chats",
             [(r.id, r.title) for r in partial[:5]],
         )
+    if id_like_miss:
+        raise TargetNotFound(f"chat {candidate!r} is not in the visible chat list")
     raise TargetNotFound(
         f"nothing matched {candidate!r}. Run `chatgpt-bridge chats` to see visible "
         "chats, or pass a chat URL."

@@ -14,7 +14,7 @@ def test_defaults_when_no_file_or_env(tmp_path: Path) -> None:
     resolved = config.load(config_path=tmp_path / "missing.toml", env={})
     s = resolved.settings
     assert s.cdp_url == "http://127.0.0.1:9222"
-    assert (s.min_delay_s, s.max_delay_s) == (2.0, 4.0)
+    assert (s.min_delay_s, s.max_delay_s) == (1.0, 2.0)
     assert s.lookup_limit == 50
     assert s.log_level == "info"
     settings_sources = {k: v for k, v in resolved.sources.items() if k != "config_file"}

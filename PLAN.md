@@ -32,12 +32,12 @@ that), multiple accounts, archived chats, and any background daemon.
 | Fetching | On demand only. No backfill, no incremental history walk. |
 | Targeting | A chat can be named by URL, ID, or title. |
 | Title lookup | Titles resolve against the visible sidebar list (top items, no history scrolling). |
-| Cache | Fetched chats are kept locally so search covers them; `refresh` refetches on request. |
+| Storage | Fetched chats are kept in a local store (not a disposable cache) so search covers them; `refresh` refetches on request. |
 | Browser | Any CDP Chromium browser; default `http://127.0.0.1:9222`. The app only connects. |
 | ChatGPT extension | Not used. |
 | Accounts | Single account. |
 | Scope | Read-only. |
-| Search | SQLite FTS5 (trigram) over cached messages only. |
+| Search | SQLite FTS5 (trigram) over stored messages only. |
 | Location | `~/projects/chatgpt-bridge/`, data in the platform data dir. |
 | Language | Python 3.12+. |
 
@@ -55,7 +55,7 @@ Defaults carried forward from the earlier plan, all accepted:
 
 ### 3.1 Connection and status
 - F-01 Connect to a CDP browser at a configurable URL.
-- F-02 `status`: cache size, last fetch, whether a fetch is running.
+- F-02 `status`: store size, last fetch, whether a fetch is running.
 - F-03 `doctor`: check CDP, login, sidebar lookup, parser, and the database.
 
 ### 3.2 Finding a chat
@@ -70,8 +70,8 @@ Defaults carried forward from the earlier plan, all accepted:
 
 ### 3.3 Fetching
 - F-20 `fetch <target>`: extract one chat, store it, return it.
-- F-21 Already cached and not expired: return the cached copy unless `--refresh`.
-- F-22 `--refresh` refetches even when cached, and reports whether the content
+- F-21 Already stored: return the stored copy unless `--refresh`. Nothing expires.
+- F-22 `--refresh` refetches even when stored, and reports whether the content
   changed.
 - F-23 Extract full message content as markdown and plain text, with code block
   languages, tables, lists, links, image placeholders, and branch counts.
@@ -82,17 +82,17 @@ Defaults carried forward from the earlier plan, all accepted:
   nothing and returns an explicit error.
 
 ### 3.4 Reading and search
-- F-30 `show <target>`: print a cached chat (text, markdown, or JSON).
-- F-31 `search <query>`: FTS5 over cached messages, with context snippets;
+- F-30 `show <target>`: print a stored chat (text, markdown, or JSON).
+- F-31 `search <query>`: FTS5 over stored messages, with context snippets;
   optional scope to one chat.
-- F-32 `chats --cached`: list only chats that have been fetched.
-- F-33 Search states clearly when the cache holds few chats, so an empty result
-  is not mistaken for "not in my history".
+- F-32 `chats --stored`: list only chats that have been fetched.
+- F-33 Search states clearly when the local store holds few chats, so an empty
+  result is not mistaken for "not in my history".
 
 ### 3.5 Housekeeping
-- F-40 `forget <target>`: remove one chat from the cache.
-- F-41 `reset`: clear the whole cache (prompts).
-- F-42 `export-raw`: JSON Lines dump of the cache.
+- F-40 `forget <target>`: remove one chat from the local store.
+- F-41 `reset`: clear the whole local store (prompts).
+- F-42 `export-raw`: JSON Lines dump of the local store.
 - F-43 `config --show`: effective settings and their source.
 - F-44 `sync` is **removed**. If it is invoked, print a message pointing at
   `fetch`.
@@ -103,7 +103,7 @@ Defaults carried forward from the earlier plan, all accepted:
 - F-51 `fetch_chat` is the primary tool: it does the retrieval the user asked
   for, and returns the conversation.
 - F-52 Chat text is returned inside the untrusted-content envelope.
-- F-53 Reads never fetch; `get_chat` returns only cached content and explains
+- F-53 Reads never fetch; `get_chat` returns only stored content and explains
   how to fetch if missing. This keeps surprise page loads at zero.
 
 ### 3.7 Later, not built
@@ -152,7 +152,7 @@ DOM; the store knows SQL; services combine them; surfaces hold no logic.
 Input can be:
 
 1. `https://chatgpt.com/c/<id>` (any ChatGPT host) → ID from the path.
-2. A bare ID or unique prefix → resolved against the cache first, then the
+2. A bare ID or unique prefix → resolved against the local store first, then the
    sidebar list.
 3. A title (anything else) → sidebar lookup:
    - exact case-insensitive match → that chat;
@@ -165,7 +165,7 @@ cannot walk your history.
 
 ### 6.2 Fetching a chat
 1. Resolve the target to an ID.
-2. If cached and not `--refresh`, return it.
+2. If stored and not `--refresh`, return it.
 3. Open `https://chatgpt.com/c/<id>` in a background tab.
 4. Wait for messages; if none appear within the timeout, report "not available
    or deleted" and store nothing.
@@ -178,10 +178,10 @@ If the browser is not reachable, or the user is not logged in, the error names
 the problem and the fix. Nothing is written in either case.
 
 ### 6.3 Freshness
-- A cached chat is returned as-is unless `--refresh` is passed.
-- There is no expiry, because nothing is fetched in the background and the cache
+- A stored chat is returned as-is unless `--refresh` is passed.
+- There is no expiry, because nothing is fetched in the background and the local store
   is only what you asked for.
-- `status` and `chats --cached` show `fetched_at`, so you can judge age and
+- `status` and `chats --stored` show `fetched_at`, so you can judge age and
   refresh deliberately.
 - `--refresh` recomputes the content hash and reports `changed: true|false`.
 
@@ -197,7 +197,7 @@ CREATE TABLE chats (
   section       TEXT,                 -- sidebar section at fetch time, if any
   content_hash  TEXT,
   turn_count    INTEGER,
-  fetched_at    TEXT NOT NULL,        -- every cached chat has been fetched
+  fetched_at    TEXT NOT NULL,        -- every stored chat has been fetched
   parse_version INTEGER NOT NULL
 );
 
@@ -240,7 +240,7 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 Changes from the previous schema: `stale`, `last_seen_at`, `sidebar_rank`, and
 `sync_runs` are dropped; `fetch_log` records individual fetches. This is a
 schema change, so the version goes to 2 with a migration that discards old
-backfilled data (the current cache is already cleared).
+backfilled data (the current local store is already cleared).
 
 ## 8. Interfaces
 
@@ -249,7 +249,7 @@ backfilled data (the current cache is already cleared).
 ```
 chatgpt-bridge status
 chatgpt-bridge doctor
-chatgpt-bridge chats [--cached] [--limit N] [--json]
+chatgpt-bridge chats [--stored] [--limit N] [--json]
 chatgpt-bridge fetch <url|id|title> [--refresh] [--json]
 chatgpt-bridge show <url|id|title> [--format text|md|json]
 chatgpt-bridge search <query> [--chat TARGET] [--limit N] [--json]
@@ -261,7 +261,7 @@ chatgpt-bridge version
 ```
 
 Exit codes: `0` ok, `1` error, `2` usage, `3` browser unreachable, `4` parse
-drift, `5` not found, `6` login required, `7` ambiguous target, `8` cache error.
+drift, `5` not found, `6` login required, `7` ambiguous target, `8` store error.
 
 `forget` and `reset` prompt unless `--yes`.
 
@@ -269,12 +269,12 @@ drift, `5` not found, `6` login required, `7` ambiguous target, `8` cache error.
 
 | Tool | Input | Output |
 |---|---|---|
-| `status` | — | cache counts, last fetch, log path |
+| `status` | — | store counts, last fetch, log path |
 | `doctor` | — | pass/fail checks |
-| `chats` | `cached?`, `limit?` | visible sidebar list, or the cached list |
+| `chats` | `stored?` (default true), `limit?` | visible sidebar list, or the stored list |
 | `fetch_chat` | `target`, `refresh?` | the conversation, fetched or refreshed |
-| `get_chat` | `target`, `format?` | cached conversation only; error explains `fetch_chat` |
-| `search_chats` | `query`, `chat?`, `limit?` | hits with snippets over cached chats |
+| `get_chat` | `target`, `format?` | stored conversation only; error explains `fetch_chat` |
+| `search_chats` | `query`, `chat?`, `limit?` | hits with snippets over stored chats |
 | `forget_chat` | `target`, `confirm` | removal result; requires `confirm=true` |
 
 Every tool returning chat text wraps it:
@@ -345,20 +345,20 @@ Environment: `CHATGPT_BRIDGE_CDP_URL`, `CHATGPT_BRIDGE_DATA_DIR`,
 | Title not visible | Exit 5, suggest `chats` or a URL |
 | Chat not available | Exit 5, nothing stored |
 | Selector drift | Exit 4 with the chat ID and what was expected |
-| Chat not cached (`show`/`get_chat`) | Exit 5, tell the caller to fetch it |
+| Chat not stored (`show`/`get_chat`) | Exit 5, tell the caller to fetch it |
 
 ## 13. Testing
 
 - **Unit, no browser:** markdown conversion, resolution rules (URL, ID, prefix,
   exact title, substring, ambiguous, missing), store and FTS behaviour,
   migrations, config precedence, CLI output and exit codes, MCP envelopes.
-- **Fetch, fake source:** cached hit, `--refresh` unchanged, `--refresh` changed,
+- **Fetch, fake source:** stored hit, `--refresh` unchanged, `--refresh` changed,
   parse failure stores nothing, browser failure stores nothing.
 - **Live (`pytest -m live`):** real CDP browser, read-only. Fetch one named chat,
   confirm code blocks and tables survive, confirm `doctor` passes.
 - Fixtures sanitised; no real chat content committed.
-- Gates: `ruff`, `mypy --strict` on `parse`, `store`, `query`, `resolve`, and
-  `pytest`.
+- Gates: `ruff`, `mypy --strict` over the whole package, and `pytest`.
+- CI runs the gates on Python 3.12–3.14 and smoke-tests the built wheel.
 
 ## 14. Security and privacy
 
@@ -383,8 +383,9 @@ Environment: `CHATGPT_BRIDGE_CDP_URL`, `CHATGPT_BRIDGE_DATA_DIR`,
 
 ## 16. Milestones
 
-Status as of 2026-10-31: milestones 1–12 are implemented and verified. The
-session-level state lives in `docs/HANDOFF.md`; this list records scope.
+Status as of 2026-10-31: milestones 1–12 are implemented and verified; 0.2.1
+adds hardening and CI. The session-level state lives in `docs/HANDOFF.md`; this
+list records scope.
 
 1. **Scaffold** — repo, tooling, both entry points. ✅
 2. **Paths, config, logging** — `config --show`, log file. ✅
@@ -393,11 +394,11 @@ session-level state lives in `docs/HANDOFF.md`; this list records scope.
 5. **Parser** — HTML → markdown/text, language labels, drift checks. ✅
 6. **Adapter** — sidebar lookup and chat extraction, verified live. ✅
 7. **Resolution** — URL, ID, prefix, title; ambiguous and missing cases. ✅
-8. **Fetch service** — cache hit, refresh, transaction, fetch log. ✅
+8. **Fetch service** — store hit, refresh, transaction, fetch log. ✅
 9. **Query and CLI** — `chats`, `fetch`, `show`, `search`, `forget`, `status`,
    `doctor`, `export-raw`, `reset`. ✅
 10. **MCP server** — seven tools, envelope, tool descriptions. ✅
-11. **Live acceptance** — fetch one named chat end to end; cache hit without a
+11. **Live acceptance** — fetch one named chat end to end; store hit without a
     browser; refresh reports changes; opt-in live tests pass. ✅
 12. **Docs and wiring** — README, CHANGELOG, `docs/HANDOFF.md`, AGENTS.md docs
     reference. OpenCode entry documented, not yet installed. ✅
@@ -412,7 +413,9 @@ Deviations recorded during the rework:
 
 ## 17. Future
 
-- `send_message` with confirmation.
+- `send_message` with confirmation. Proposed in `docs/SEND-MESSAGE-DESIGN.md`;
+  not implemented, pending the approval checklist.
 - Create a new chat.
 - Optional bulk discovery, if you ever want it, behind an explicit flag and off
   by default.
+- Several targets in one `fetch` call (`fetch a b c`), still undecided.

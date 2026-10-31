@@ -73,8 +73,13 @@ def fetch_chat(
         resolved = cached
         if resolved is None or refresh:
             if session is None:
+                if cached is not None:
+                    raise TargetNotFound(
+                        f"chat {target!r} is stored but cannot be refreshed "
+                        "without a browser session"
+                    )
                 raise TargetNotFound(
-                    f"chat {target!r} is not cached and no browser session is available"
+                    f"chat {target!r} is not stored and no browser session is available"
                 )
             with session() as source:
                 if resolved is None:
@@ -104,7 +109,18 @@ def _fetch_and_store(
     *,
     refresh: bool,
 ) -> FetchResult:
-    extracted = source.fetch_chat(resolved.id)
+    try:
+        extracted = source.fetch_chat(resolved.id)
+    except Exception as exc:
+        # Record the failure without storing content or the exception message,
+        # which may contain a URL or a title.
+        store.record_fetch(
+            conn,  # type: ignore[arg-type]
+            resolved.id,
+            "failed",
+            type(exc).__name__,
+        )
+        raise
     turns = [
         Turn(
             role=turn.role,
@@ -144,12 +160,3 @@ def _fetch_and_store(
         outcome = "unchanged"
     log.info("fetched chat %s (%s, %d turns)", chat.id, outcome, len(chat.turns))
     return FetchResult(chat=chat, outcome=outcome, changed=changed)
-
-
-def remember_failure(db_path: Path | None, chat_id: str, detail: str) -> None:
-    """Record a failed fetch without changing cached content."""
-    conn = store.connect(db_path)
-    try:
-        store.record_fetch(conn, chat_id, "failed", detail)
-    finally:
-        conn.close()

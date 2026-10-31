@@ -96,10 +96,21 @@ def test_cache_resolution_miss_returns_none() -> None:
     assert resolve_from_cache("nothing here", [summary("c1", "Other")]) is None
 
 
+def test_hex_word_is_a_title_when_no_id_matches() -> None:
+    resolved = resolve_from_cache("decade", [summary("c1", "The decade in review")])
+    assert resolved is not None
+    assert resolved.id == "c1"
+
+
 def test_listing_resolution_by_title() -> None:
     resolved = resolve_with_listing("Sample hardware review", [ref("c1", "Sample hardware review")])
     assert resolved.id == "c1"
     assert resolved.from_cache is False
+
+
+def test_listing_resolution_hex_word_title() -> None:
+    resolved = resolve_with_listing("decade", [ref("c1", "The decade in review")])
+    assert resolved.id == "c1"
 
 
 def test_listing_resolution_by_url_not_in_list() -> None:

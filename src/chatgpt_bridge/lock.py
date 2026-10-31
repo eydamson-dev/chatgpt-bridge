@@ -24,12 +24,12 @@ except ImportError:  # pragma: no cover - POSIX
 
 
 class LockBusy(RuntimeError):
-    """Another sync holds the lock."""
+    """Another fetch holds the lock."""
 
 
 @contextmanager
 def sync_lock(path: Path, timeout_s: float = 0.0) -> Iterator[Path]:
-    """Exclusive lock so only one sync runs at a time across CLI and MCP.
+    """Exclusive lock so only one fetch runs at a time across CLI and MCP.
 
     The OS releases the lock when the process exits, so a crash cannot leave a
     stale lock behind.
@@ -52,7 +52,7 @@ def _acquire(handle: Any, path: Path, timeout_s: float) -> None:
         if _try_acquire(handle):
             return
         if time.monotonic() >= deadline:
-            raise LockBusy(f"a sync is already running (lock: {path})")
+            raise LockBusy(f"a fetch is already running (lock: {path})")
         time.sleep(0.2)
 
 

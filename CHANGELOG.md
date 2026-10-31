@@ -3,6 +3,39 @@
 User-visible changes only. Implementation detail lives in git history,
 `PLAN.md`, and `docs/HANDOFF.md`.
 
+## 0.2.1 — hardening
+
+Fixes found while verifying the 0.2.0 release end to end. No behaviour changes
+to fetching or reading.
+
+### Fixed
+
+- Logs and `export-raw` files are created user-only (`0600`), including after a
+  log rotation. An existing log file is tightened the next time the app starts.
+- A title made only of hex characters, such as `decade`, was mistaken for an ID
+  prefix and could not be resolved. It now falls back to title matching.
+- Search terms shorter than three characters were ignored unless the whole
+  query was short. Mixed queries such as `go store` now fall back to a literal
+  scan.
+- `find_by_title` treated `%` and `_` as SQL wildcards instead of literal
+  characters.
+- A failed fetch now records a `failed` row in the fetch log, with the exception
+  type only — never the message, URL, or title.
+- The default pacing values are now `1.0`–`2.0` s, matching the documented
+  configuration.
+- The lock error says a fetch is running, not a removed `sync`.
+- `reset --json` returns a JSON result.
+- An unusable database path now reports a store error instead of a traceback.
+- Repeated logging setup closes the previous file handler instead of leaking it.
+- User-facing messages say "stored chats", not "cached chats".
+
+### Changed
+
+- CI runs lint, format, type checks, tests on Python 3.12–3.14, and a wheel
+  install smoke test.
+- `docs/SEND-MESSAGE-DESIGN.md` proposes the write path. It is **not
+  implemented** and needs approval.
+
 ## 0.2.0 — on-demand retrieval
 
 Reworked from a mirror model to on-demand fetching. **`sync` is removed.** The
@@ -14,7 +47,7 @@ cache now holds only chats you asked for.
 - `fetch <url|id|prefix|title>` — fetch one conversation and store it.
   `--refresh` refetches and reports whether the content changed.
 - `chats` — visible sidebar list for title lookup (read-only, no scrolling);
-  `--cached` lists what has been fetched.
+  `--stored` lists what has been fetched.
 - `forget <target>` — remove one chat from the cache (prompts; `--yes`).
 - Target resolution by URL, full ID, unique ID prefix, exact title, or unique
   title substring. Ambiguous matches list candidates and fetch nothing.

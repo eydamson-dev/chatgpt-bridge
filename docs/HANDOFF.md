@@ -25,7 +25,8 @@ reading and search.
 
 ## Current state
 
-Working, verified against a live browser (Brave on `127.0.0.1:9222`):
+Version **0.2.1**. Working, verified against a live browser (Brave on
+`127.0.0.1:9222`):
 
 - Target resolution by URL, full ID, ID prefix, exact title, unique title
   substring; ambiguity is reported with candidates and no page loads.
@@ -39,8 +40,15 @@ Working, verified against a live browser (Brave on `127.0.0.1:9222`):
 - MCP server exposes `status`, `chats`, `fetch_chat`, `get_chat`,
   `search_chats`, `forget_chat`, `doctor`; chat text is wrapped as untrusted
   content.
-- 196 unit tests and 2 opt-in live tests pass; `ruff` and `mypy --strict` are
-  clean.
+- 205 unit tests and 2 opt-in live tests pass on Python 3.12 and 3.14;
+  `ruff` and `mypy --strict` are clean.
+- The built wheel includes both migrations, installs into a clean virtual
+  environment, and both entry points work. `.github/workflows/ci.yml` repeats
+  lint, format, types, tests (3.12–3.14), and a wheel smoke test.
+- A real stdio MCP handshake lists the seven tools and calls `status`; live
+  `doctor` passes against Chrome/Brave with 16 sidebar chats visible.
+- Logs, database, and `export-raw` output are user-only (`0600`). A failed
+  fetch records metadata only.
 
 Schema is **version 2**. Migration `002_on_demand.sql` rebuilds the tables and
 discards v1 backfill data; a v1 database migrates automatically.
@@ -55,7 +63,7 @@ src/chatgpt_bridge/
   fetch.py          fetch service: stored hit, refresh, save, fetch log
   query.py          local-store reads: list, get, search, render, envelope
   store.py          SQLite schema, migrations, FTS, fetch log
-  adapter? -> adapters/chatgpt.py   all ChatGPT selectors and labels
+  adapters/chatgpt.py   all ChatGPT selectors and labels
   browser.py        CDP connection, own tabs, reachability
   parse.py          HTML -> markdown/text, turn validation (pure)
   config.py         layered settings with source tracking
@@ -66,6 +74,8 @@ src/chatgpt_bridge/
   maintenance.py    export-raw, reset
 tests/              unit, fake-source, CLI, MCP (no browser)
 tests/test_live.py  opt-in live checks (`-m live`)
+.github/workflows/ci.yml   lint, types, tests, wheel smoke test
+docs/SEND-MESSAGE-DESIGN.md   proposed write path, not implemented
 ```
 
 ## Verify before changing anything
@@ -75,6 +85,8 @@ uv sync
 uv run ruff check . && uv run ruff format --check .
 uv run mypy
 uv run pytest
+uv run pytest -m live          # needs a reachable, logged-in CDP browser
+uv build                       # wheel must contain migrations/*.sql
 ```
 
 Manual check against the real browser (requires a logged-in CDP browser):
@@ -97,8 +109,8 @@ uv run chatgpt-bridge fetch "<title>"  # served from local store, no page load
 6. Reads never trigger a page load; only `fetch_chat` does.
 7. The local SQLite database is the product's storage, not a throwaway cache:
    conversations the user has not fetched exist nowhere locally.
-7. Title lookup reads the visible sidebar only, never scrolls.
-8. A failed parse stores nothing.
+8. Title lookup reads the visible sidebar only, never scrolls.
+9. A failed parse stores nothing.
 
 ## Decisions (durable)
 
@@ -124,6 +136,15 @@ uv run chatgpt-bridge fetch "<title>"  # served from local store, no page load
   is real storage, not a disposable copy.
 - **2026-10-31 — markdown plus plain text per message.** Markdown keeps code
   fences and tables readable; plain text drives search.
+- **2026-10-31 — 0.2.1 hardening.** Private files are created `0600` rather than
+  fixed afterwards. All-hex words fall back to title matching when no ID
+  matches. Mixed short search terms use a literal `LIKE` scan. Failed fetches
+  record the exception type only.
+- **2026-10-31 — no automatic expiry.** Stored chats never age out; `forget` and
+  `reset` remain the only deletion paths.
+- **2026-10-31 — `send_message` is still unbuilt.** The write path is proposed in
+  `docs/SEND-MESSAGE-DESIGN.md` and needs the approval checklist before any code
+  is added.
 
 ## Gotchas discovered
 
@@ -148,6 +169,22 @@ uv run chatgpt-bridge fetch "<title>"  # served from local store, no page load
   outside discovery scope.
 - Two CDP clients can attach at once (this app and the chrome-devtools MCP), but
   avoid overlapping live runs while debugging.
+- **Log files are world-readable by default.** `logging.handlers` creates them
+  with the process umask, so `setup_logging` must `chmod(0o600)` after the
+  handler opens the file. Same for exports: open with `os.open(..., 0o600)`, not
+  `Path.open`.
+- **All-hex titles look like ID prefixes.** `decade`, `facade`, and `accede` are
+  valid 6+ hex strings, so resolution must fall through to title matching when
+  no ID or prefix matches. The final error should still say "not in the visible
+  chat list" when the target looked like an ID.
+- **FTS5 trigram cannot match terms shorter than 3 characters.** A mixed query
+  such as `go store` needs the whole query to use the `LIKE` fallback, not just
+  queries shorter than 3 characters overall.
+- **`LIKE` treats `%` and `_` as wildcards.** Escape user text and add
+  `ESCAPE '\'`; otherwise a title or search term containing `%` matches
+  everything.
+- **The wheel must contain `migrations/*.sql`.** They are package data read at
+  runtime; `uv build` + install into a clean venv is the check.
 
 ## Known limitations
 
@@ -161,26 +198,26 @@ uv run chatgpt-bridge fetch "<title>"  # served from local store, no page load
 
 ## Next step
 
-Nothing is in flight. All twelve milestones in `PLAN.md` §16 are done, the
-local store is empty, and `uv run pytest` (196 tests) plus `uv run pytest -m live`
-(2 tests) pass.
+All twelve read-only milestones in `PLAN.md` §16 are done, 0.2.1 is verified,
+and 205 unit tests plus 2 live tests pass. Nothing is in flight.
 
-**Next phase, milestone 1 (recommended): `send_message`.** The user's workflow
-half-works today: retrieval is done, sending is not, so "ask ChatGPT to make a
-plan" still needs the web UI. Recommended because it unlocks the other half.
+**Blocked on the user: approve the `send_message` design.** The proposal is in
+`docs/SEND-MESSAGE-DESIGN.md`; no write path exists in the code. The checklist
+needs a yes/no on:
 
-It is a **write path**, so it starts with design, not code, and needs explicit
-user approval on:
+1. Existing chat only in phase 1 (new chat later).
+2. CLI prompt plus `--yes`; MCP dry run by default, `confirm=true` plus
+   `expected_chat_id` to actually send.
+3. Keep the chat's current model and mode; no switching.
+4. Append to the displayed branch only; refuse when the composer already has a
+   draft.
+5. No automatic retry after submit; return `unknown` if the reply does not
+   arrive.
+6. Optional: metadata-only `send_log` in schema v3, an opt-in MCP send tool, and
+   a live-send test gated by `CHATGPT_BRIDGE_ALLOW_SEND=1`.
 
-1. Which target: an existing chat, a new chat, or both.
-2. The confirmation gate: interactive prompt in the CLI, `confirm=true` in MCP,
-   and what the error says when it is missing.
-3. Model and mode selection, or always the user's current defaults.
-4. Branch behaviour when a reply already exists: append, or refuse.
-5. Failure handling: the message is typed but the reply never arrives.
-
-Alternative first milestones, if the write path should stay closed:
-`--json` on `fetch` progress output, or an age-based purge for stored chats.
+Until that approval, keep the write path closed. A safe alternative is the
+remaining open question below: `fetch a b c` for several targets in one call.
 
 ## Engineering vault
 
@@ -191,10 +228,13 @@ Recorded (2026-10-31), for durable context rather than implementation detail:
   behaviour. Read the Traps section before changing the adapter, store, or tests.
 - `Lessons/MCP-Python-SDK-2-Renamed-FastMCP.md`
 - `Lessons/FTS5-Trigram-Snippet-Truncates.md`
+- `Lessons/Private-Files-Need-Mode-At-Creation.md`
 
 Update the project note when a decision changes, not when code changes.
 
 ## Open questions for the user
 
 - Should `fetch` accept several targets at once (`fetch a b c`)?
-- Should the local store keep chats indefinitely, or gain an age-based purge?
+- Should the package be published to PyPI, or stay install-from-source only?
+- Stored chats do **not** expire; the user rejected an age-based purge. Keep
+  `forget` and `reset` as the only deletion paths unless that changes.

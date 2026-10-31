@@ -94,7 +94,7 @@ def _check_database() -> Check:
     return Check(
         "database",
         True,
-        f"{paths.db_path()} schema={version} cached_chats={counts.chats} messages={counts.turns}",
+        f"{paths.db_path()} schema={version} stored_chats={counts.chats} messages={counts.turns}",
     )
 
 

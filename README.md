@@ -3,6 +3,8 @@
 Pull a specific ChatGPT conversation into your terminal or into OpenCode, on
 demand.
 
+[![CI](https://github.com/eydamson-dev/chatgpt-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/eydamson-dev/chatgpt-bridge/actions/workflows/ci.yml)
+
 Repository: <https://github.com/eydamson-dev/chatgpt-bridge> · MIT licensed
 
 It attaches to a Chromium-based browser you are already logged into, opens that
@@ -12,7 +14,8 @@ name it.
 
 - No API key. It uses the browser session you already have.
 - No cookies, tokens, or profile files are read, stored, or logged.
-- Read-only. It cannot send messages.
+- Read-only. It cannot send messages. The proposed write path is in
+  [`docs/SEND-MESSAGE-DESIGN.md`](docs/SEND-MESSAGE-DESIGN.md) and is not built.
 - Local only. No listener, no daemon, no telemetry.
 
 ## Why

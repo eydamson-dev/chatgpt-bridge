@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from chatgpt_bridge import logging_setup
+from chatgpt_bridge import config, logging_setup
 from chatgpt_bridge.cli import main
 
 
@@ -38,4 +38,30 @@ def test_logging_writes_to_file_not_stdout(
     main(["version"])
     assert capsys.readouterr().out.strip().startswith("chatgpt-bridge ")
     logging.getLogger(logging_setup.LOGGER_NAME).info("probe message")
-    assert (isolated_dirs / "logs" / logging_setup.LOG_FILE_NAME).exists()
+    log_path = isolated_dirs / "logs" / logging_setup.LOG_FILE_NAME
+    assert log_path.exists()
+    assert log_path.stat().st_mode & 0o077 == 0
+
+
+def test_setup_logging_closes_the_previous_handler(isolated_dirs: Path) -> None:
+    settings = config.load(env={}).settings
+    logging_setup.setup_logging(settings)
+    previous = logging.getLogger(logging_setup.LOGGER_NAME).handlers[0]
+    logging_setup.setup_logging(settings)
+    assert previous.stream is None
+
+
+def test_log_rollover_keeps_every_file_private(
+    isolated_dirs: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(logging_setup, "MAX_BYTES", 100)
+    settings = config.load(env={}).settings
+    logging_setup.setup_logging(settings)
+    logger = logging.getLogger(logging_setup.LOGGER_NAME)
+    for index in range(30):
+        logger.info("line %d %s", index, "x" * 20)
+
+    log_dir = isolated_dirs / "logs"
+    files = list(log_dir.iterdir())
+    assert len(files) > 1
+    assert all(path.stat().st_mode & 0o077 == 0 for path in files)

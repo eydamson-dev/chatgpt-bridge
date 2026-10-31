@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 from pathlib import Path
 
 from chatgpt_bridge import paths, query, store
@@ -16,7 +17,12 @@ def export_raw(out: Path | None = None) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     conn = store.connect()
     try:
-        with target.open("w", encoding="utf-8") as handle:
+        # Create with 0600 from the start: an export contains full chat text.
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        # The open mode does not apply to a file that already existed.
+        with contextlib.suppress(OSError):
+            os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             for summary in store.chat_summaries(conn):
                 chat = store.get_chat(conn, summary.id)
                 if chat is None:
@@ -27,7 +33,7 @@ def export_raw(out: Path | None = None) -> Path:
         conn.close()
     with contextlib.suppress(OSError):
         target.chmod(0o600)
-    log.info("exported raw cache to %s", target)
+    log.info("exported raw store to %s", target)
     return target
 
 

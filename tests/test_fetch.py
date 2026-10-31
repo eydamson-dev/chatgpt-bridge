@@ -153,4 +153,13 @@ def test_failure_stores_nothing(db: Path) -> None:
 
     conn = store.connect(db)
     assert store.counts(conn).chats == 0
+    entry = store.last_fetch(conn)
+    assert entry is not None
+    assert (entry.chat_id, entry.status, entry.detail) == (UUID, "failed", "RuntimeError")
     conn.close()
+
+
+def test_refresh_of_cached_chat_without_session_says_so(db: Path) -> None:
+    fetch_chat(UUID, db_path=db, session=session_for(FakeSource([])))
+    with pytest.raises(TargetNotFound, match="cannot be refreshed"):
+        fetch_chat(UUID, refresh=True, db_path=db, session=None)

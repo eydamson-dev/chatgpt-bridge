@@ -128,14 +128,28 @@ def content_hash(turns: Iterable[Turn]) -> str:
 
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
     path = db_path or paths.db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    _restrict_permissions(path)
-    migrate(conn, path)
+    conn: sqlite3.Connection | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        _restrict_permissions(path)
+        migrate(conn, path)
+    except (OSError, sqlite3.Error) as exc:
+        _close_quietly(conn)
+        raise StoreError(f"cannot open database {path}: {exc}") from exc
+    except BaseException:
+        _close_quietly(conn)
+        raise
     return conn
+
+
+def _close_quietly(conn: sqlite3.Connection | None) -> None:
+    if conn is not None:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
 
 
 def _restrict_permissions(path: Path) -> None:
@@ -336,12 +350,13 @@ def resolve_chat_id(conn: sqlite3.Connection, candidate: str) -> str | None:
 
 
 def find_by_title(conn: sqlite3.Connection, title: str) -> list[ChatSummary]:
-    """Cached chats whose title matches exactly, else by substring."""
+    """Cached chats whose title matches exactly, else by literal substring."""
     exact = conn.execute("SELECT * FROM chats WHERE title = ? COLLATE NOCASE", (title,)).fetchall()
     rows = (
         exact
         or conn.execute(
-            "SELECT * FROM chats WHERE title LIKE ? COLLATE NOCASE", (f"%{title}%",)
+            "SELECT * FROM chats WHERE title LIKE ? ESCAPE '\\'",
+            (f"%{_like_escape(title)}%",),
         ).fetchall()
     )
     return [
@@ -408,10 +423,12 @@ def search(
     chat_id: str | None = None,
     limit: int = 20,
 ) -> list[SearchHit]:
-    """Full-text search. Short queries (<3 chars) fall back to a LIKE scan."""
+    """Full-text search. Terms shorter than 3 chars cannot be trigram-indexed, so
+    those queries fall back to a LIKE scan."""
     query = query.strip()
     if not query:
         return []
+    terms = query.split()
 
     filters: list[str] = []
     params: list[Any] = []
@@ -420,7 +437,7 @@ def search(
         params.append(chat_id)
     where = (" AND " + " AND ".join(filters)) if filters else ""
 
-    if len(query) >= 3:
+    if all(len(term) >= 3 for term in terms):
         sql = (
             "SELECT t.chat_id, c.title, t.position, t.role, t.text AS text "
             "FROM turns_fts JOIN turns t ON t.rowid = turns_fts.rowid "
@@ -430,13 +447,15 @@ def search(
         )
         rows = conn.execute(sql, [_fts_query(query), *params, limit]).fetchall()
     else:
+        likes = " AND ".join("lower(t.text) LIKE lower(?) ESCAPE '\\'" for _ in terms)
         sql = (
             "SELECT t.chat_id, c.title, t.position, t.role, t.text AS text "
             "FROM turns t JOIN chats c ON c.id = t.chat_id "
-            f"WHERE lower(t.text) LIKE lower(?){where} "
+            f"WHERE {likes}{where} "
             "ORDER BY t.chat_id, t.position LIMIT ?"
         )
-        rows = conn.execute(sql, [f"%{query}%", *params, limit]).fetchall()
+        patterns = [f"%{_like_escape(term)}%" for term in terms]
+        rows = conn.execute(sql, [*patterns, *params, limit]).fetchall()
 
     return [
         SearchHit(
@@ -473,6 +492,11 @@ def _fts_query(query: str) -> str:
     """Quote each term so FTS5 syntax characters are treated as text."""
     terms = [t.replace('"', '""') for t in query.split() if t]
     return " AND ".join(f'"{term}"' for term in terms)
+
+
+def _like_escape(value: str) -> str:
+    """Make %, _ and the escape character literal inside a LIKE pattern."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def counts(conn: sqlite3.Connection) -> Counts:

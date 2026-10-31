@@ -45,6 +45,11 @@ def test_db_file_is_user_only(tmp_path: Path) -> None:
     assert path.stat().st_mode & 0o077 == 0
 
 
+def test_unusable_database_path_reports_store_error(tmp_path: Path) -> None:
+    with pytest.raises(store.StoreError, match="cannot open database"):
+        store.connect(tmp_path)  # a directory, not a database file
+
+
 def test_newer_schema_refused(tmp_path: Path) -> None:
     path = tmp_path / "bridge.db"
     conn = store.connect(path)
@@ -170,6 +175,13 @@ def test_find_by_title(conn) -> None:
     assert store.find_by_title(conn, "nothing") == []
 
 
+def test_find_by_title_treats_wildcards_literally(conn) -> None:
+    seed(conn, "c1", "100% Fedora")
+    seed(conn, "c2", "other")
+    assert [c.id for c in store.find_by_title(conn, "%")] == ["c1"]
+    assert store.find_by_title(conn, "_") == []
+
+
 def test_forget_chat(conn) -> None:
     seed(conn, "c1")
     assert store.forget_chat(conn, "c1") is True
@@ -199,6 +211,13 @@ def test_search_short_query_uses_like(conn) -> None:
     turns = [Turn(role="user", markdown="an ox", text="an ox")]
     store.save_chat(conn, "c1", "t", "u", turns, store.content_hash(turns))
     assert len(store.search(conn, "ox")) == 1
+
+
+def test_search_mixed_short_terms_uses_like(conn) -> None:
+    turns = [Turn(role="user", markdown="go to the store", text="go to the store")]
+    store.save_chat(conn, "c1", "t", "u", turns, store.content_hash(turns))
+    assert len(store.search(conn, "go store")) == 1
+    assert len(store.search(conn, "100%")) == 0
 
 
 def test_search_scoped_to_chat(conn) -> None:

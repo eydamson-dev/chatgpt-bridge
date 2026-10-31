@@ -20,8 +20,8 @@ class ConfigError(ValueError):
 @dataclass(frozen=True)
 class Settings:
     cdp_url: str = "http://127.0.0.1:9222"
-    min_delay_s: float = 2.0
-    max_delay_s: float = 4.0
+    min_delay_s: float = 1.0
+    max_delay_s: float = 2.0
     lookup_limit: int = 50
     log_level: str = "info"
     data_dir: Path = field(default_factory=paths.data_dir)
