@@ -335,7 +335,7 @@ The user verified the CLI by hand on 2026-11-01: `doctor`, `chats`, `chats
 
 Remaining, and deliberately not built:
 
-- `fetch a b c` for several targets (open question).
+- `fetch a b c` for several targets — **deferred**, not rejected; see Settled.
 - Edit, delete, rename, and branch switching (out of scope).
 - PyPI publication (rejected; see Decisions).
 
@@ -354,11 +354,17 @@ Update the project note when a decision changes, not when code changes.
 
 ## Open questions for the user
 
-- Should `fetch` accept several targets at once (`fetch a b c`)?
-- Stored chats do **not** expire; the user rejected an age-based purge. Keep
-  `forget` and `reset` as the only deletion paths unless that changes.
+Nothing is open. Stored chats do **not** expire; the user rejected an age-based
+purge, so `forget` and `reset` remain the only deletion paths.
 
 Settled:
+
+- **Several targets in one `fetch` is deferred, not rejected** (2026-11-01). The
+  user has no current need and a shell loop already covers it:
+  `for t in a b c; do chatgpt-bridge fetch "$t"; done`. If it is ever built, do
+  it as `fetch --from-file targets.txt` with per-target status and pacing, not
+  variadic arguments: variadic targets make bulk fetching look casual and break
+  the single-document output shape.
 
 - **No PyPI publication** (2026-11-01). Install from git or a local clone.
   Rationale: it is a personal tool driving a logged-in browser, it sits in a

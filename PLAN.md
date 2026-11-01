@@ -457,7 +457,9 @@ Deviations recorded during the rework:
 
 - Optional bulk discovery, if you ever want it, behind an explicit flag and off
   by default.
-- Several targets in one `fetch` call (`fetch a b c`), still undecided.
+- Several targets in one `fetch` call: deferred 2026-11-01, not rejected. A shell
+  loop covers the need today; if built, use `fetch --from-file`, not variadic
+  arguments.
 - Edit/delete/rename and branch switching remain deliberately out of scope.
 - Project-level writes and files remain out of scope; see `docs/PROJECTS-PLAN.md`.
 - PyPI publication is **not planned** (2026-11-01). Install from git or a local
