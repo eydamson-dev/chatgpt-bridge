@@ -107,3 +107,59 @@ def test_config_file_source_from_env(tmp_path: Path) -> None:
     resolved = config.load(env={"CHATGPT_BRIDGE_CONFIG": str(cfg)})
     assert resolved.settings.config_file == cfg
     assert resolved.sources["config_file"] == "env"
+
+
+def test_managed_mode_points_cdp_at_the_managed_port(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[browser]\nmode = "managed"\nmanaged_cdp_port = 9333\n')
+    resolved = config.load(config_path=cfg, env={})
+    assert resolved.settings.cdp_url == "http://127.0.0.1:9333"
+    assert resolved.sources["cdp_url"] == "managed"
+
+
+def test_explicit_cdp_url_wins_over_managed_mode(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[browser]\nmode = "managed"\nmanaged_cdp_port = 9333\ncdp_url = "http://127.0.0.1:9999"\n'
+    )
+    resolved = config.load(config_path=cfg, env={})
+    assert resolved.settings.cdp_url == "http://127.0.0.1:9999"
+    assert resolved.sources["cdp_url"] == "file"
+
+
+def test_external_mode_keeps_the_default_cdp_url(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[browser]\nmode = "external"\n')
+    resolved = config.load(config_path=cfg, env={})
+    assert resolved.settings.cdp_url == "http://127.0.0.1:9222"
+    assert resolved.settings.browser_mode == "external"
+
+
+def test_managed_profile_dir_is_expanded(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[browser]\nmode = "managed"\nmanaged_profile_dir = "~/somewhere"\n')
+    resolved = config.load(config_path=cfg, env={})
+    assert str(resolved.settings.managed_profile_dir).startswith(str(Path.home()))
+
+
+def test_unknown_browser_mode_is_rejected(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[browser]\nmode = "cloud"\n')
+    with pytest.raises(config.ConfigError, match="browser.mode"):
+        config.load(config_path=cfg, env={})
+
+
+def test_managed_ports_must_differ(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[browser]\nmode = "managed"\nmanaged_cdp_port = 9223\nmanaged_gui_port = 9223\n'
+    )
+    with pytest.raises(config.ConfigError, match="must differ"):
+        config.load(config_path=cfg, env={})
+
+
+def test_managed_port_must_be_a_port(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[browser]\nmanaged_cdp_port = 70000\n")
+    with pytest.raises(config.ConfigError, match="TCP port"):
+        config.load(config_path=cfg, env={})

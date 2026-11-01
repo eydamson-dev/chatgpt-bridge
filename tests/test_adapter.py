@@ -115,7 +115,9 @@ class _FakePage:
         self.selector_ok = selector_ok
         self.evaluated: list[str] = []
 
-    def wait_for_selector(self, selector: str, timeout: int | None = None) -> None:
+    def wait_for_selector(
+        self, selector: str, timeout: int | None = None, state: str = "attached"
+    ) -> None:
         if not self.selector_ok:
             raise RuntimeError("timeout")
 
@@ -226,7 +228,9 @@ class _SendPage:
         self.keyboard = _Keyboard(self)
         self.post = post
 
-    def wait_for_selector(self, selector: str, timeout: int | None = None) -> None:
+    def wait_for_selector(
+        self, selector: str, timeout: int | None = None, state: str = "attached"
+    ) -> None:
         if selector == chatgpt.COMPOSER and self.login:
             raise RuntimeError("timeout")
         if selector == chatgpt.SEND_BUTTON and not self.typed:
@@ -372,7 +376,9 @@ class _ProjectPage:
         self.clicked: list[str] = []
         self.typed = ""
 
-    def wait_for_selector(self, selector: str, timeout: int | None = None) -> None:
+    def wait_for_selector(
+        self, selector: str, timeout: int | None = None, state: str = "attached"
+    ) -> None:
         return None
 
     def evaluate(self, script: str) -> object:
@@ -433,7 +439,9 @@ class _ProjectSendPage:
         self.clicks: list[str] = []
         self.keyboard = _Keyboard(self)
 
-    def wait_for_selector(self, selector: str, timeout: int | None = None) -> None:
+    def wait_for_selector(
+        self, selector: str, timeout: int | None = None, state: str = "attached"
+    ) -> None:
         return None
 
     def evaluate(self, script: str) -> object:
@@ -632,3 +640,22 @@ def test_send_refuses_a_duplicated_message() -> None:
     with pytest.raises(chatgpt.SendFailed, match="did not accept"):
         adapter.send_message(UUID, message)
     assert chatgpt.SEND_BUTTON not in page.clicks
+
+
+def test_list_chats_reports_a_logged_out_sidebar() -> None:
+    """Logged out, the nav is in the DOM but hidden: that must not be a timeout."""
+
+    class _LoggedOut:
+        def wait_for_selector(
+            self, selector: str, timeout: int | None = None, state: str = "attached"
+        ) -> None:
+            if state == "attached":
+                return
+            raise RuntimeError("nav never became visible")
+
+        def evaluate(self, script: str) -> object:
+            return {"sidebar": True, "login": True}
+
+    adapter = ChatGPTAdapter(_FakeBrowser(_LoggedOut()), page_delay_s=0)  # type: ignore[arg-type]
+    with pytest.raises(LoginRequired, match="not logged in"):
+        adapter.list_chats()

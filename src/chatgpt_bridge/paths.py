@@ -33,5 +33,10 @@ def db_path() -> Path:
     return data_dir() / "bridge.db"
 
 
+def browser_dir() -> Path:
+    """Profile directory for the managed background browser."""
+    return data_dir() / "browser"
+
+
 def lock_path() -> Path:
     return data_dir() / "sync.lock"

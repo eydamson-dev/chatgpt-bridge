@@ -29,12 +29,17 @@ SIDEBAR_NAV = 'nav[aria-label="Chat history"]'
 CHAT_LINK = 'a[href^="/c/"]'
 SIDEBAR_CHAT_LINK = 'nav[aria-label="Chat history"] a[href^="/c/"]'
 SIDEBAR_LINK_TIMEOUT_MS = 10_000
+SIDEBAR_VISIBLE_TIMEOUT_MS = 8_000
 ROLE_HEADING = "h4[data-conversation-role]"
 TURN_WRAPPER = "[data-turn-key]"
 SIDEBAR_SCROLLABLE_MAX_STEPS = 40
 SIDEBAR_STABLE_ROUNDS = 2
 
 LOAD_TIMEOUT_MS = 30_000
+LOGIN_REQUIRED_MESSAGE = (
+    "ChatGPT is not logged in in this browser, or the sidebar is missing. "
+    "Open https://chatgpt.com in that browser, log in, then retry."
+)
 REPLY_TIMEOUT_S = 120.0
 REPLY_POLL_S = 0.5
 REPLY_STABLE_POLLS = 3
@@ -337,7 +342,13 @@ class ChatGPTAdapter:
         Scrolling is off by default: this is a title lookup, not a history backfill.
         """
         with self.browser.open_tab(BASE_URL) as page:
-            page.wait_for_selector(SIDEBAR_NAV, timeout=LOAD_TIMEOUT_MS)
+            page.wait_for_selector(SIDEBAR_NAV, timeout=LOAD_TIMEOUT_MS, state="attached")
+            try:
+                page.wait_for_selector(SIDEBAR_NAV, timeout=SIDEBAR_VISIBLE_TIMEOUT_MS)
+            except Exception as exc:
+                # Logged out, ChatGPT leaves the nav in the DOM but hidden, so
+                # waiting for visibility alone looks like a 30s stall.
+                raise LoginRequired(LOGIN_REQUIRED_MESSAGE) from exc
             # The nav renders before its chat links hydrate.
             with contextlib.suppress(Exception):
                 page.wait_for_selector(SIDEBAR_CHAT_LINK, timeout=SIDEBAR_LINK_TIMEOUT_MS)
@@ -612,10 +623,7 @@ class ChatGPTAdapter:
             except Exception:
                 state = {}
             if not state.get("sidebar") or state.get("login"):
-                raise LoginRequired(
-                    "ChatGPT is not logged in in this browser, or the sidebar is missing. "
-                    "Open https://chatgpt.com in that browser, log in, then retry."
-                ) from exc
+                raise LoginRequired(LOGIN_REQUIRED_MESSAGE) from exc
             raise ChatNotFound(
                 "the message composer did not load; the chat may be unavailable, "
                 "or the page layout changed"
@@ -702,10 +710,7 @@ class ChatGPTAdapter:
 
 def _parse_sidebar(payload: dict[str, Any]) -> list[ChatRef]:
     if payload.get("loginRequired") or not payload.get("ok"):
-        raise LoginRequired(
-            "ChatGPT is not logged in in this browser, or the sidebar is missing. "
-            "Open https://chatgpt.com in that browser, log in, then retry."
-        )
+        raise LoginRequired(LOGIN_REQUIRED_MESSAGE)
     refs: list[ChatRef] = []
     for item in payload.get("chats", []):
         section = item.get("section")

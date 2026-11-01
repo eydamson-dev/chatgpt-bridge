@@ -3,6 +3,36 @@
 User-visible changes only. Implementation detail lives in git history,
 `PLAN.md`, and `docs/HANDOFF.md`.
 
+## 0.6.0 — background browser
+
+ChatGPT can now run in a managed container instead of a tab in your everyday
+browser.
+
+### Added
+
+- `chatgpt-bridge browser start | stop | restart | status | login`.
+- `[browser] mode = "external" | "managed"` and `managed_*` settings. Default
+  stays `external`, so nothing changes until you opt in.
+- MCP and CLI share the setting; no new MCP tool.
+
+### Behaviour
+
+- The managed browser is a Chromium container (`jlesage/chromium`) with CDP on
+  `127.0.0.1:9223` and a web GUI on `127.0.0.1:5801` for the one-time login.
+  Both ports are bound to loopback only.
+- The profile is `~/.local/share/chatgpt-bridge/browser` (mode `0700`), mounted
+  into the container. The ChatGPT session survives restarts; the tool never
+  reads the profile.
+- `mode = "managed"` never falls back to another browser. If the container is
+  down, commands fail with exit `3`.
+- Docker is only required for `managed` mode.
+
+### Fixed
+
+- A logged-out browser now reports "ChatGPT is not logged in in this browser"
+  instead of hanging for 30 seconds and printing a traceback. Logged out,
+  ChatGPT leaves the chat-history sidebar in the DOM but hidden.
+
 ## 0.5.2 — long messages
 
 ### Fixed

@@ -5,7 +5,7 @@ not history. Update it at the end of every milestone: rewrite the "Current state
 and "Next step" sections, and append to "Decisions" and "Gotchas" only when
 something durable was learned.
 
-Last updated: 2026-11-01 (0.5.2 create a project)
+Last updated: 2026-11-01 (0.6.0 background browser)
 
 ## What this project is
 
@@ -32,7 +32,7 @@ project with a name.
 
 ## Current state
 
-Version **0.5.2**. Working, verified against a live browser (Brave on
+Version **0.6.0**. Working, verified against a live browser (Brave on
 `127.0.0.1:9222`):
 
 - Target resolution by URL, full ID, ID prefix, exact title, unique title
@@ -55,7 +55,13 @@ Version **0.5.2**. Working, verified against a live browser (Brave on
 - `send` appends one confirmed message to an existing chat; `new` creates a chat
   with one message. Both wait for the reply and refresh the local copy.
   `--dry-run` resolves without a page or a send; `--yes` skips the prompt.
-- `new-project` (alias `create-project`) creates one empty project. It sets the
+- `browser start|stop|restart|status|login` manages an optional Docker-hosted
+  Chromium. `[browser] mode = "managed"` points every command and the MCP server
+  at it (`127.0.0.1:9223`), with the profile at
+  `~/.local/share/chatgpt-bridge/browser`. Verified live: login survived a
+  container restart and a profile migration, `doctor`, `chats`, `fetch
+  --refresh`, `projects`, and a confirmed `send` all pass through it, and no tab
+  appears on the desktop. `new-project` (alias `create-project`) creates one empty project. It sets the
   name only, verifies the field reads back exactly before clicking Create, and
   confirms the project appeared (list row or project URL) before reporting
   success. `--dry-run` and `--yes` behave as on `new`.
@@ -95,6 +101,7 @@ src/chatgpt_bridge/
   fetch.py          fetch service: stored hit, refresh, save, fetch log
   send.py           explicit write service: send one, create one, send log
   project.py        explicit write service: create one empty project
+  managed_browser.py  Docker container for the background browser
   query.py          local-store reads: list, get, search, render, envelope
   store.py          SQLite schema, migrations, FTS, fetch/send logs
   adapters/chatgpt.py   all ChatGPT selectors and labels
@@ -213,6 +220,11 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
     Send is clicked.
 12. Never retry after submit. A missing reply is `unknown`, never a silent
     resend.
+13. The managed browser's CDP port is published on loopback only. It grants
+    control of a logged-in session, so it never binds 0.0.0.0 and never sits
+    behind a tunnel.
+14. `mode = "managed"` never falls back to another browser. A stopped container
+    is an error, not a reason to use a different session.
 
 ## Decisions (durable)
 
@@ -266,6 +278,16 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
 - **2026-11-01 — store both project ID and name.** `project_id` (`g-p-<hex>`) is
   authoritative; `project` is the display name and may go stale after a rename.
   Both are treated as personal data and never logged.
+- **2026-11-01 — the background browser is a container, not a systemd unit.**
+  The user asked for no visible tabs. ChatGPT proposed systemd + Xvfb; a spike
+  showed `jlesage/chromium` already does Xvfb + Chromium + a login GUI + CDP
+  forwarding, with CDP reachable over ordinary bridge networking. Docker owns
+  the lifecycle, so no systemd unit, no host Xvfb, no bundled Chromium. Rejected:
+  Steel and Browserless (session-per-request), Neko (no CDP), Scry (2 stars,
+  idle), Moli (headless-only engine, no human login).
+- **2026-11-01 — no silent browser fallback.** If `managed` is down, fail. The
+  alternative risks sending a message through a session the user did not
+  confirm.
 - **2026-11-01 — project creation is in scope for 0.5.0, name only.** The user
   asked for it after asking why the tool could not create a project. Creation is
   limited to one empty project with a name: the dialog's memory, icon, and
@@ -348,6 +370,16 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
   out of order (1972 chars in, 3986 out). Set the message with `fill()` instead;
   it lands in one shot. The verification compares words with whitespace
   collapsed, because the editor reflows paragraph breaks.
+- **A logged-out ChatGPT hides the sidebar instead of removing it.** The nav is
+  in the DOM with `display: none`, so waiting for visibility looks like a 30s
+  hang and a raw traceback. Wait for it attached, then for visible with a short
+  timeout, and raise `LoginRequired` (0.6.0).
+- **jlesage/chromium exposes CDP over ordinary bridge networking.** No host
+  networking and no socat sidecar are needed, unlike the linuxserver image.
+  Publish `127.0.0.1:<port>:9222`; the image forwards internally.
+- **The container's Chromium runs with `--no-sandbox`** (fine inside the
+  container) and `--user-data-dir=/config/chromium`, which Chrome 136+ requires
+  before it will accept `--remote-debugging-port`.
 - **The projects page hydrates in two stages.** `div[data-project-row]` is in
   the main area almost immediately, but the sidebar (and with it `Add new
   project`) appears roughly a second later. Wait for the create control, not
@@ -402,7 +434,7 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
 
 ## Next step
 
-Nothing is in flight. Milestones 1–16 in `PLAN.md` §16 are done; 0.5.0 is
+Nothing is in flight. Milestones 1–17 in `PLAN.md` §16 are done; 0.6.0 is
 verified; all unit tests, 4 read live tests, and 2 gated send live tests pass.
 `docs/ACCEPTANCE.md` records the 0.3.0 feature run and the 0.3.1/0.4.0
 additions. `docs/PROJECTS-PLAN.md` remains the design record for projects —

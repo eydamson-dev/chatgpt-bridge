@@ -8,8 +8,9 @@ from typing import Any, Literal
 
 from chatgpt_bridge import paths
 
-Source = Literal["default", "file", "env", "flag"]
+Source = Literal["default", "file", "env", "flag", "managed"]
 LOG_LEVELS = ("info", "debug")
+BROWSER_MODES = ("external", "managed")
 CDP_URL_ENV = "CHATGPT_BRIDGE_CDP_URL"
 
 
@@ -20,6 +21,11 @@ class ConfigError(ValueError):
 @dataclass(frozen=True)
 class Settings:
     cdp_url: str = "http://127.0.0.1:9222"
+    browser_mode: str = "external"
+    managed_cdp_port: int = 9223
+    managed_gui_port: int = 5801
+    managed_image: str = "jlesage/chromium:latest"
+    managed_profile_dir: Path = field(default_factory=paths.browser_dir)
     min_delay_s: float = 1.0
     max_delay_s: float = 2.0
     lookup_limit: int = 50
@@ -31,6 +37,11 @@ class Settings:
 # (section, key) in the TOML file -> Settings field name
 _FILE_KEYS: dict[tuple[str, str], str] = {
     ("browser", "cdp_url"): "cdp_url",
+    ("browser", "mode"): "browser_mode",
+    ("browser", "managed_cdp_port"): "managed_cdp_port",
+    ("browser", "managed_gui_port"): "managed_gui_port",
+    ("browser", "managed_image"): "managed_image",
+    ("browser", "managed_profile_dir"): "managed_profile_dir",
     ("pacing", "min_delay_s"): "min_delay_s",
     ("pacing", "max_delay_s"): "max_delay_s",
     ("lookup", "limit"): "lookup_limit",
@@ -70,6 +81,8 @@ def load(
     sources: dict[str, Source] = {f.name: "default" for f in fields(Settings)}
 
     for name, value in _read_file(path).items():
+        if name == "managed_profile_dir" and isinstance(value, str):
+            value = Path(value).expanduser()
         values[name] = value
         sources[name] = "file"
 
@@ -89,6 +102,10 @@ def load(
         values["data_dir"] = paths.data_dir(env)
 
     settings = replace(Settings(), **values)
+    # A managed browser owns its own endpoint. An explicit cdp_url still wins.
+    if settings.browser_mode == "managed" and sources["cdp_url"] == "default":
+        settings = replace(settings, cdp_url=f"http://127.0.0.1:{settings.managed_cdp_port}")
+        sources["cdp_url"] = "managed"
     _validate(settings)
     return Resolved(settings=settings, sources=sources)
 
@@ -130,6 +147,18 @@ def _unknown_keys(raw: dict[str, Any]) -> list[str]:
 def _validate(s: Settings) -> None:
     if not (s.cdp_url.startswith("http://") or s.cdp_url.startswith("https://")):
         raise ConfigError(f"cdp_url must start with http:// or https:// (got {s.cdp_url!r})")
+    if s.browser_mode not in BROWSER_MODES:
+        raise ConfigError(
+            f"browser.mode must be one of {', '.join(BROWSER_MODES)} (got {s.browser_mode!r})"
+        )
+    for name, port in (
+        ("managed_cdp_port", s.managed_cdp_port),
+        ("managed_gui_port", s.managed_gui_port),
+    ):
+        if not 1 <= port <= 65535:
+            raise ConfigError(f"browser.{name} must be a TCP port (got {port})")
+    if s.managed_cdp_port == s.managed_gui_port:
+        raise ConfigError("browser.managed_cdp_port and managed_gui_port must differ")
     if s.min_delay_s < 0 or s.max_delay_s < s.min_delay_s:
         raise ConfigError("pacing requires 0 <= min_delay_s <= max_delay_s")
     if s.lookup_limit < 1:

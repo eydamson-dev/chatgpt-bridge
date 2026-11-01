@@ -447,6 +447,9 @@ session-level state lives in `docs/HANDOFF.md`; this list records scope.
 16. **Create a project** — `new-project` / `create-project`, MCP
     `create_project`, name-only creation with a read-back check and an
     appear-check before success. ✅ 0.5.0
+17. **Background browser** — `browser start|stop|restart|status|login`,
+    `[browser] mode`, Docker-hosted Chromium with loopback CDP and a persistent
+    profile, no silent fallback, logged-out detection. ✅ 0.6.0
 
 Deviations recorded during the rework:
 

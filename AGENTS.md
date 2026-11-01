@@ -38,6 +38,10 @@ not a disposable cache.
 - **Never store or log a project name as if it were safe.** Project names and
   IDs are personal data: they may be stored locally and shown to the user, but
   they never go into logs.
+- **The managed browser's CDP port is loopback only.** It grants control of a
+  logged-in session, so it never binds `0.0.0.0` and never sits behind a tunnel.
+  `mode = "managed"` never falls back to another browser: a stopped container is
+  an error, not a reason to use a different session.
 - **Never handle credentials.** Do not read, store, print, or log cookies,
   tokens, headers, or browser storage. Do not add code that reads a browser
   profile directory.

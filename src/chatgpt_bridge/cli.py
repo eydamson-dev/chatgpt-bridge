@@ -71,6 +71,13 @@ def build_parser() -> argparse.ArgumentParser:
     add("status", help="local store size and last fetch")
     add("doctor", help="check browser, login, parser, and database")
 
+    browser = add("browser", help="manage the background browser container")
+    browser.add_argument(
+        "action",
+        choices=["start", "stop", "restart", "status", "login"],
+        help="what to do with the managed browser",
+    )
+
     add("projects", help="list ChatGPT projects")
 
     chats = add("chats", help="list chats")
@@ -162,6 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "config": _cmd_config,
         "status": _cmd_status,
         "doctor": _cmd_doctor,
+        "browser": _cmd_browser,
         "projects": _cmd_projects,
         "chats": _cmd_chats,
         "fetch": _cmd_fetch,
@@ -310,6 +318,62 @@ def _cmd_doctor(args: argparse.Namespace, resolved: config.Resolved) -> int:
     else:
         print(report.render())
     return EXIT_OK if report.ok else EXIT_ERROR
+
+
+def _cmd_browser(args: argparse.Namespace, resolved: config.Resolved) -> int:
+    from chatgpt_bridge import managed_browser
+
+    settings = resolved.settings
+    try:
+        if args.action in {"start", "restart"}:
+            if args.action == "start":
+                managed_browser.start(settings)
+            else:
+                managed_browser.restart(settings)
+            payload = managed_browser.health(settings)
+            _emit(args, payload, _browser_text(payload))
+            return EXIT_OK if payload["browser"] else EXIT_BROWSER
+        if args.action == "stop":
+            managed_browser.stop()
+            _emit(args, {"running": False}, "stopped")
+            return EXIT_OK
+        if args.action == "status":
+            payload = managed_browser.health(settings)
+            _emit(args, payload, _browser_text(payload))
+            return EXIT_OK
+        # login
+        payload = managed_browser.health(settings)
+        if not payload["running"]:
+            _err("the managed browser is not running; start it with: chatgpt-bridge browser start")
+            return EXIT_BROWSER
+        print(str(payload["gui_url"]))
+        if not args.quiet:
+            print(
+                "log in to ChatGPT in that window; the profile keeps the session",
+                file=sys.stderr,
+            )
+        return EXIT_OK
+    except managed_browser.ManagedBrowserError as exc:
+        _err(str(exc))
+        return EXIT_BROWSER
+
+
+def _browser_text(payload: dict[str, Any]) -> str:
+    state = "running" if payload["running"] else "stopped"
+    cdp = str(payload["cdp_url"])
+    if payload.get("browser"):
+        cdp = f"{cdp}  ({payload['browser']})"
+    lines = [
+        f"service   {state}",
+        f"container {payload['container']}",
+        f"cdp       {cdp}",
+        f"gui       {payload['gui_url']}",
+        f"profile   {payload['profile_dir']}",
+        f"image     {payload['image']}",
+    ]
+    if payload.get("detail"):
+        lines.append(f"detail    {payload['detail']}")
+    return "\n".join(lines)
 
 
 def _cmd_projects(args: argparse.Namespace, resolved: config.Resolved) -> int:

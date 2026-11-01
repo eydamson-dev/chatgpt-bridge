@@ -187,6 +187,40 @@ Check it:
 curl -s http://127.0.0.1:9222/json/version
 ```
 
+## Background browser (optional)
+
+By default the tool drives a browser you already run. If you would rather keep
+ChatGPT out of your everyday browser, run it in a container instead: it stays
+logged in, exposes CDP on loopback, and never opens a tab on your desktop.
+
+```bash
+chatgpt-bridge browser start     # pull/start the container, wait for CDP
+chatgpt-bridge browser login     # prints the URL to log in once
+chatgpt-bridge browser status    # service, CDP, profile, image
+chatgpt-bridge browser stop
+```
+
+Then point the tool at it, once:
+
+```toml
+[browser]
+mode = "managed"
+```
+
+Requires Docker. The profile lives at
+`~/.local/share/chatgpt-bridge/browser` (mode `0700`) and holds the ChatGPT
+session, so the login survives restarts, image updates, and reboots. Nothing is
+read from it: it is mounted into the container, never parsed.
+
+`mode = "managed"` means the managed browser or nothing. If the container is
+stopped, commands fail with exit `3` rather than quietly using another browser —
+a message must never be sent through a different session than the one you
+confirmed.
+
+The CDP port is published on `127.0.0.1` only. Anyone who can reach it controls
+the logged-in session, so never publish it on `0.0.0.0`, and never put it behind
+a tunnel or reverse proxy.
+
 ## Use
 
 ```bash
@@ -350,7 +384,9 @@ If you have not installed the package, point at the clone's virtualenv instead:
 `/path/to/chatgpt-bridge/.venv/bin/chatgpt-bridge-mcp`.
 
 Tools: `status`, `chats`, `fetch_chat`, `get_chat`, `search_chats`,
-`forget_chat`, `doctor`, `send_message`, `create_chat`, `projects`.
+`forget_chat`, `doctor`, `send_message`, `create_chat`, `create_project`,
+`projects`. The browser is configured through the same config file, so
+`mode = "managed"` applies to the MCP server too.
 
 `chats`, `fetch_chat`, `search_chats`, `send_message`, and `create_chat` accept
 a `project` argument.
@@ -371,7 +407,14 @@ session rather than globally.
 
 ```toml
 [browser]
-cdp_url = "http://127.0.0.1:9222"
+cdp_url = "http://127.0.0.1:9222"   # ignored when mode = "managed"
+mode = "external"                   # external | managed
+
+# used only when mode = "managed"
+managed_cdp_port = 9223
+managed_gui_port = 5801
+managed_image = "jlesage/chromium:latest"
+managed_profile_dir = "~/.local/share/chatgpt-bridge/browser"
 
 [pacing]
 min_delay_s = 1.0
@@ -398,6 +441,8 @@ on Linux); the database is user-only readable.
 | Symptom | Fix |
 |---|---|
 | `browser unreachable at http://127.0.0.1:9222` | Start the browser with `--remote-debugging-port=9222`. |
+| `browser unreachable at http://127.0.0.1:9223` | `chatgpt-bridge browser start` (mode `managed`), or check `docker ps`. |
+| `ChatGPT is not logged in in this browser` | Log in at the URL from `chatgpt-bridge browser login`. |
 | `ChatGPT is not logged in in this browser` | Log in at <https://chatgpt.com>, then retry. |
 | `nothing matched '...'` | Run `chatgpt-bridge chats`, or pass the chat URL. |
 | `matches several visible chats` | Use a longer title or the chat URL. |

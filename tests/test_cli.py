@@ -396,3 +396,52 @@ def test_send_dry_run_scoped_to_project_shows_project_in_label(
     assert main(["send", "6ae5de7d", "hello", "--dry-run", "--project", "Test project"]) == EXIT_OK
     out = capsys.readouterr().out
     assert "would send to" in out
+
+
+def test_browser_status_reports_the_container(
+    seeded: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chatgpt_bridge import managed_browser
+
+    def fake_health(settings: object) -> dict[str, object]:
+        return {
+            "running": True,
+            "container": "chatgpt-bridge-browser",
+            "cdp_url": "http://127.0.0.1:9223",
+            "gui_url": "http://127.0.0.1:5801",
+            "profile_dir": "/tmp/profile",
+            "image": "jlesage/chromium:latest",
+            "browser": "Chrome/155",
+            "detail": None,
+        }
+
+    monkeypatch.setattr(managed_browser, "health", fake_health)
+    assert main(["browser", "status"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "service   running" in out
+    assert "Chrome/155" in out
+    assert "http://127.0.0.1:5801" in out
+
+
+def test_browser_login_prints_the_gui_url(
+    seeded: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chatgpt_bridge import managed_browser
+
+    monkeypatch.setattr(
+        managed_browser,
+        "health",
+        lambda settings: {"running": True, "gui_url": "http://127.0.0.1:5801"},
+    )
+    assert main(["browser", "login"]) == EXIT_OK
+    assert capsys.readouterr().out.strip() == "http://127.0.0.1:5801"
+
+
+def test_browser_login_refuses_when_stopped(
+    seeded: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chatgpt_bridge import managed_browser
+
+    monkeypatch.setattr(managed_browser, "health", lambda settings: {"running": False})
+    assert main(["browser", "login"]) == EXIT_BROWSER
+    assert "not running" in capsys.readouterr().err

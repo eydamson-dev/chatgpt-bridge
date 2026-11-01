@@ -228,3 +228,38 @@ clutter in the user's account, so the write was verified by hand once.
 
 - 311 offline tests, 4 read live tests, 2 gated send live tests.
 - `ruff` and `mypy --strict` clean.
+
+## 0.6.0 — background browser
+
+Verified 2026-11-01 against a live Docker container (`jlesage/chromium`,
+Chrome 155.0.8059.84), logged in by the user through the web GUI.
+
+| Feature | Result | Evidence |
+|---|---|---|
+| `browser start` | pass | container created, CDP answered on `127.0.0.1:9223` |
+| `browser status` | pass | service, container, CDP + version, GUI, profile, image |
+| `browser stop` | pass | `doctor` then fails with exit 1, no fallback to Brave |
+| `browser login` | pass | printed the GUI URL |
+| `mode = "managed"` | pass | `doctor` used `:9223` with no flags; source `[managed]` |
+| CDP over bridge networking | pass | no host networking, no socat sidecar |
+| Playwright attach + disconnect | pass | browser survived `browser.close()` |
+| Profile persistence | pass | session survived a container restart |
+| Profile migration | pass | login survived copying the profile to the data dir |
+| `doctor` through the container | pass | all checks, 8 chats |
+| `chats` (live sidebar) | pass | 8 chats |
+| `fetch --refresh` (project chat) | pass | 6 s, correct `/g/…` URL |
+| `projects` | pass | live list |
+| `send --yes` | pass | replied "OK" in 10 s, stored locally |
+| Visible tab on the desktop | pass | none |
+| Footprint | measured | ~600 MB RAM, ~0% CPU idle, 1.46 GB image |
+
+### Bug found during the spike
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| 30 s hang + traceback when logged out | ChatGPT keeps the sidebar nav in the DOM but hidden | wait attached, then visible with a short timeout, raise `LoginRequired` |
+
+### Test totals at 0.6.0
+
+- 332 offline tests, 4 read live tests, 2 gated send live tests.
+- `ruff` and `mypy --strict` clean.
