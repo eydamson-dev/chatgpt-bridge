@@ -206,6 +206,14 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
   Rationale: personal tool over a logged-in browser, terms-of-use grey area, and
   a public package implies release and support commitments. `uv tool install
   git+…` covers other machines without it.
+- **2026-11-01 — Projects are in scope for 0.4.0, narrowly.** Read: list
+  projects, list their chats, search their chat titles. Write: create one chat in
+  a project, send one message to a project chat. Creating, renaming, deleting, or
+  pinning a project and touching its files or instructions stay out. Search stays
+  title-only (option A): no bulk fetching of project content.
+- **2026-11-01 — store both project ID and name.** `project_id` (`g-p-<hex>`) is
+  authoritative; `project` is the display name and may go stale after a rename.
+  Both are treated as personal data and never logged.
 - **2026-11-01 — empty searches explain themselves.** A hitless `search` says
   that titles are not indexed and how to fetch from the sidebar; if the term
   matches a stored title it points at `show` instead. This keeps the
@@ -262,6 +270,20 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
   gone and the last assistant turn's text length is stable for three polls.
 - **`send` is not idempotent.** After a reply timeout there is no safe way to
   know whether ChatGPT accepted the message; report `unknown` and stop.
+- **Project rows are not links.** In the sidebar and on `/projects`, a project is
+  `div[data-project-row]` holding buttons (`Toggle project`,
+  `Start new chat in project`). `a[href]`-only extraction cannot see projects,
+  which is why project chats were undiscoverable.
+- **Project chat links are outside the project row.** They are ordinary anchors
+  whose href carries both IDs: `/g/g-p-<project-id>/c/<chat-id>`. Group by the
+  href, not by the row element, and de-duplicate by chat ID — each chat yields
+  two identical anchors on `/projects`.
+- **A project chat URL has two forms.** In the DOM it is
+  `/g/g-p-<id>/c/<chat-id>`; after a send the address bar shows the slugged
+  `/g/g-p-<id>-<project-slug>/c/<chat-id>`. `chat_id_from_url()` handles both,
+  `CHAT_URL_RE` handles neither.
+- **`/projects` may only list chats for expanded projects.** Unverified; expand
+  the project named in the request before reading its chat list.
 
 ## Known limitations
 
@@ -269,7 +291,10 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
   selectors live in `adapters/chatgpt.py`.
 - Only the displayed branch is stored; alternative count is best-effort.
 - Attachments: names and types only, files not downloaded.
-- Archived chats are unreachable; project chats are not discoverable.
+- Archived chats are unreachable.
+- Project chats are reachable only by URL in 0.3.1. They are no longer
+  undiscoverable by accident: `docs/PROJECTS-PLAN.md` records the verified UI
+  and the plan to expose them in 0.4.0.
 - Linux verified. macOS and Windows are untested.
 - Writes are one message per call; no edit, delete, rename, or branch switching.
 - A reply timeout leaves the send `unknown`; the tool never retries.
@@ -277,9 +302,16 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
 
 ## Next step
 
-Nothing is in flight. Milestones 1–14 in `PLAN.md` §16 are done; 0.3.1 is
-verified; all unit tests, 2 read live tests, and 1 gated send live test pass.
-`docs/ACCEPTANCE.md` records the full feature run.
+**ChatGPT Projects (0.4.0) is planned and milestone 1 is done.**
+`docs/PROJECTS-PLAN.md` is the authority; read it before touching the adapter,
+resolution, or the schema. Milestone 1 verified the live UI and resolved the
+project-ID question on 2026-11-01. Next is milestone 2, the read path
+(`list_projects`, `list_project_chats`, CLI `projects`, MCP `projects`), which
+needs no schema change.
+
+Otherwise nothing is in flight. Milestones 1–14 in `PLAN.md` §16 are done;
+0.3.1 is verified; all unit tests, 2 read live tests, and 1 gated send live test
+pass. `docs/ACCEPTANCE.md` records the full feature run.
 
 The user verified the CLI by hand on 2026-11-01: `doctor`, `chats`, `chats
 --stored`, `fetch`, `show`, `search`, dry run, prompt cancel, `send --yes`, and

@@ -440,6 +440,10 @@ session-level state lives in `docs/HANDOFF.md`; this list records scope.
 14. **Live acceptance** — create, send, read, refresh, search, export, forget,
     reset, and all nine MCP tools exercised against the real browser; sanitized
     evidence in `docs/ACCEPTANCE.md`. ✅ 0.3.0
+15. **ChatGPT Projects** — list projects, list their chats, title search, project
+    membership in schema v4, `--project` on `chats`/`fetch`/`search`/`send`/`new`,
+    create a chat inside a project. Planned in `docs/PROJECTS-PLAN.md`; milestone
+    1 (live UI verification) done 2026-11-01. Target 0.4.0.
 
 Deviations recorded during the rework:
 
@@ -454,6 +458,8 @@ Deviations recorded during the rework:
 - Optional bulk discovery, if you ever want it, behind an explicit flag and off
   by default.
 - Several targets in one `fetch` call (`fetch a b c`), still undecided.
+- ChatGPT Projects (0.4.0): read titles and chats, plus creating/sending inside a
+  project. See `docs/PROJECTS-PLAN.md`.
 - Edit/delete/rename and branch switching remain deliberately out of scope.
 - PyPI publication is **not planned** (2026-11-01). Install from git or a local
   clone; `uv tool install git+…` covers other machines.
