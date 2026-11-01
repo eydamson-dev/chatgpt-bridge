@@ -120,10 +120,16 @@ chatgpt-bridge doctor
 
 ### Upgrade and remove
 
+A `git+` install pins the **pushed commit**, not your working tree: local edits
+do not appear until you push and reinstall.
+
 ```bash
-uv tool upgrade chatgpt-bridge      # git installs
+git push
+uv tool upgrade --reinstall chatgpt-bridge   # pick up the new commit
 uv tool uninstall chatgpt-bridge
 ```
+
+If the version does not move, re-run the install command with `--force`.
 
 ### Register the MCP server
 

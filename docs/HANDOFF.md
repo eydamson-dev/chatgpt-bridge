@@ -67,6 +67,9 @@ Version **0.4.0**. Working, verified against a live browser (Brave on
 - Logs, database, `send_log`, and `export-raw` output are user-only (`0600`).
   A failed fetch records metadata only; a send records status and error type,
   never message text.
+- Installed on the user's machine as a uv tool from git (`chatgpt-bridge 0.4.0`
+  in `~/.local/bin`, usable from any directory), with the MCP server pointed at
+  the project venv.
 - Full feature evidence: `docs/ACCEPTANCE.md`.
 
 Schema is **version 4**. Migration `002_on_demand.sql` rebuilds the tables and
@@ -111,12 +114,31 @@ below. Install from source or from git.
 uv tool install git+https://github.com/eydamson-dev/chatgpt-bridge   # from git
 git clone <repo> && cd chatgpt-bridge && uv tool install .           # from a clone
 uv tool install --editable .                                         # development
+uv tool upgrade --reinstall chatgpt-bridge                           # after pushing
 uv tool uninstall chatgpt-bridge                                     # remove
 ```
 
-Installs two console scripts, `chatgpt-bridge` and `chatgpt-bridge-mcp`. The
-MCP client config needs the **absolute** path from `command -v
-chatgpt-bridge-mcp`; a bare name fails when the client's `PATH` differs.
+Installs two console scripts, `chatgpt-bridge` and `chatgpt-bridge-mcp`, into
+`~/.local/bin`, backed by an isolated environment at
+`~/.local/share/uv/tools/chatgpt-bridge/`.
+
+**The user's machine currently has two installs, deliberately:**
+
+| Location | Used by | Updates when |
+|---|---|---|
+| `~/.local/share/uv/tools/chatgpt-bridge/` | `chatgpt-bridge` in the shell | `uv tool upgrade --reinstall` |
+| `~/projects/chatgpt-bridge/.venv/` | tests and the MCP server | `uv sync` / `uv run` |
+
+The MCP entry points at the **project venv**, so MCP tracks local changes
+without a reinstall, while the shell command tracks pushed commits. They agree
+whenever the tree is pushed and synced. If that ever causes confusion, repoint
+the MCP command at the tool install instead.
+
+A `git+` install pins the pushed commit, not the working tree.
+
+The MCP client config needs the **absolute** path from `command -v
+chatgpt-bridge-mcp`; a bare name fails when the client's `PATH` differs — MCP
+clients do not necessarily inherit your shell `PATH`.
 
 `uv run chatgpt-bridge …` only works inside the repository, because `uv run`
 needs a `pyproject.toml` in the current directory. From anywhere else, use the
@@ -298,6 +320,14 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
 - **The projects list renders incrementally.** Reading as soon as the first
   `div[data-project-row]` appears drops the remaining projects; poll until the
   count is stable twice.
+- **OpenCode spawns one MCP server per workspace connection.** `directory=~` and
+  `directory=<project>` each get their own process; two processes is normal, not
+  a leak.
+- **Killing an MCP server process breaks that server for the life of the
+  backend.** OpenCode logs `mcp transport error … MCP server process exited` and
+  never respawns it. The desktop window is a separate systemd scope from the
+  backend (`opencode-cli serve --service`), so closing and reopening the window
+  does nothing. Stop the backend scope, then relaunch.
 - **A project chat's address-bar URL is slugged** (`/g/g-p-<id>-<slug>/c/<chat>`)
   while the DOM link is `/g/g-p-<id>/c/<chat>`. Both parse; only
   `PROJECT_CHAT_URL_RE` accepts them.
@@ -349,6 +379,8 @@ Recorded for durable context rather than implementation detail:
 - `Lessons/MCP-Python-SDK-2-Renamed-FastMCP.md`
 - `Lessons/FTS5-Trigram-Snippet-Truncates.md`
 - `Lessons/Private-Files-Need-Mode-At-Creation.md`
+- `Lessons/OpenCode-MCP-Server-Dies-With-Backend.md` — why an MCP server stays
+  broken after killing it, and why restarting the window does not help.
 
 Update the project note when a decision changes, not when code changes.
 
