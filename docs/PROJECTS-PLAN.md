@@ -1,14 +1,16 @@
 # ChatGPT Projects — implementation plan
 
-**Status:** **implemented in 0.4.0** (2026-11-01). Milestones 1–7 complete.
-This document records the design and the verification that shaped it.
+**Status:** **implemented in 0.4.0** (2026-11-01); project creation added in
+0.5.0. Milestones 1–7 complete. This document records the design and the
+verification that shaped it.
 **Approved:** 2026-11-01 by the user.
 
 Adds awareness of ChatGPT Projects: list them, list their chats, search them by
 title, store which project a chat belongs to, and create/send inside one.
 
 Project-level writes — creating, renaming, deleting a project, and managing its
-files or instructions — stay **out of scope**.
+files or instructions — were **out of scope** for 0.4.0. Creation was added in
+0.5.0 (§12); everything else stays out.
 
 ---
 
@@ -38,6 +40,7 @@ The `/g/<project>/c/<chat>` URL form is already parsed by `chat_id_from_url`, so
 | Expand a project | `button[aria-label="Toggle project"]` |
 | Start a chat in a project | `button[aria-label="Start new chat in project"]` |
 | Project menu (out of scope) | `button[aria-label="Project actions for <name>"]` |
+| Add new project | `button[aria-label="Add new project"]` (sidebar only) |
 | Pin (out of scope) | `button[aria-label="Pin project"]` |
 | Project chat link | `a[href="/g/g-p-<project-id>/c/<chat-id>"]` |
 
@@ -320,3 +323,34 @@ bug in the milestone.
 
 Milestone 1 created one chat in `chatgpt-bridge test`
 (titled `Reply Exactly OK`). It is throwaway data in the test project.
+
+## 12. Project creation (0.5.0)
+
+Verified live on 2026-11-01 by creating `chatgpt-bridge create test`.
+
+| Item | Value |
+|---|---|
+| Control | `button[aria-label="Add new project"]`, sidebar only, also `[data-app-action-sidebar-project-create]` |
+| Dialog | `div[role="dialog"]`, heading `Create project` |
+| Name field | `#chatgpt-project-name`, `name="project-name"`, placeholder `Copenhagen Trip` |
+| Submit | `div[role="dialog"] button:text-is("Create project")`, disabled until the name is non-empty |
+| Untouched | `Default memory` toggle, `Change icon and color` control, `Close dialog` |
+| After create | the page navigates to `/g/g-p-<id>/project`, which yields the project ID |
+
+**Trap.** A normal Playwright click on the sidebar button times out: the
+Projects section header and the sidebar scroll container intercept pointer
+events. The button is clicked in-page instead (`OPEN_PROJECT_DIALOG_JS`).
+
+**Rules.** Only the name is set. The name must read back exactly before Create
+is clicked; a mismatch closes the dialog and creates nothing. After Create, the
+project must appear as a row or the URL must match the project page, otherwise
+the command fails with "check before retrying" rather than retrying and risking
+a duplicate. Renaming, deleting, pinning, memory, icon, files, and instructions
+remain unreachable.
+
+**Tests.** Adapter fakes cover success, trimming, empty/overlong names, a name
+the field alters, a missing control, and a project that never appears. CLI and
+MCP cover the dry run, the missing-terminal refusal, the confirmed path, and a
+page failure. No live write test is gated for creation: creating a project on
+every CI run would leave clutter in the user's account, so it was verified by
+hand once.

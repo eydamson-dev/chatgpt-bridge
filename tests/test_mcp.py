@@ -123,6 +123,7 @@ def test_tool_surface_is_explicit() -> None:
         "doctor",
         "send_message",
         "create_chat",
+        "create_project",
         "projects",
     }
     assert not any(name for name in names if name in {"sync", "delete_chat", "rename_chat"})
@@ -163,7 +164,9 @@ def test_write_tools_require_confirmation() -> None:
     send = (tools["send_message"].description or "").lower()
     create = (tools["create_chat"].description or "").lower()
     assert "confirm=true" in send and "expected_chat_id" in send
+    project = (tools["create_project"].description or "").lower()
     assert "confirm=true" in create
+    assert "confirm=true" in project
     assert "untrusted" in send
 
 
@@ -245,3 +248,46 @@ def test_create_dry_run_reports_the_project() -> None:
     payload = mcp_server.create_chat("hello", project="Test project")
     assert payload["dry_run"] is True
     assert payload["project"] == "Test project"
+
+
+def test_create_project_dry_run_creates_nothing() -> None:
+    payload = mcp_server.create_project("Copenhagen Trip")
+    assert payload["ok"] is True
+    assert payload["dry_run"] is True
+    assert payload["name"] == "Copenhagen Trip"
+    assert payload["requires"] == "confirm=true"
+
+
+def test_create_project_rejects_an_empty_name() -> None:
+    payload = mcp_server.create_project("   ", confirm=True)
+    assert payload["ok"] is False
+    assert "empty" in payload["error"]
+
+
+def test_create_project_confirm_creates(seeded: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from chatgpt_bridge.adapters.chatgpt import ProjectRef
+
+    calls: list[str] = []
+
+    def fake_create(name: str, *, session: object = None) -> ProjectRef:
+        calls.append(name)
+        return ProjectRef(name=name, project_id="g-p-abc")
+
+    monkeypatch.setattr(mcp_server.project_service, "create_project", fake_create)
+    payload = mcp_server.create_project("  Trip  ", confirm=True)
+    assert payload == {"ok": True, "name": "Trip", "project_id": "g-p-abc"}
+    assert calls == ["Trip"]
+
+
+def test_create_project_reports_a_page_failure(
+    seeded: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chatgpt_bridge.adapters.chatgpt import ProjectCreateFailed
+
+    def fake_create(name: str, *, session: object = None) -> object:
+        raise ProjectCreateFailed("the create-project dialog did not open")
+
+    monkeypatch.setattr(mcp_server.project_service, "create_project", fake_create)
+    payload = mcp_server.create_project("Trip", confirm=True)
+    assert payload["ok"] is False
+    assert "dialog" in payload["error"]

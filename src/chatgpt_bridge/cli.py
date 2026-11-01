@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from chatgpt_bridge import __version__, config, paths, query, store
+from chatgpt_bridge import project as project_service
 from chatgpt_bridge import send as send_service
 from chatgpt_bridge.adapters.chatgpt import (
     ChatGPTAdapter,
     ChatNotFound,
     LoginRequired,
+    ProjectCreateFailed,
     SendFailed,
 )
 from chatgpt_bridge.browser import Browser, BrowserError
@@ -99,6 +101,17 @@ def build_parser() -> argparse.ArgumentParser:
     new.add_argument("--dry-run", action="store_true", help="show the message without sending")
     new.add_argument("--project", metavar="NAME", help="create the chat inside this project")
 
+    new_project = add(
+        "new-project",
+        aliases=["create-project"],
+        help="create a new ChatGPT project",
+    )
+    new_project.add_argument("name", help="project name")
+    new_project.add_argument("--yes", action="store_true", help="do not prompt")
+    new_project.add_argument(
+        "--dry-run", action="store_true", help="show the name without creating"
+    )
+
     show = add("show", help="print a stored chat")
     show.add_argument("target")
     show.add_argument("--format", choices=["text", "md", "json"], default="text")
@@ -155,6 +168,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "send": _cmd_send,
         "new": _cmd_new,
         "create-chat": _cmd_new,
+        "new-project": _cmd_new_project,
+        "create-project": _cmd_new_project,
         "show": _cmd_show,
         "search": _cmd_search,
         "forget": _cmd_forget,
@@ -199,6 +214,12 @@ def _run(handler: Any, args: argparse.Namespace, resolved: config.Resolved) -> i
     except send_service.SendError as exc:
         _err(str(exc))
         return EXIT_USAGE
+    except project_service.ProjectError as exc:
+        _err(str(exc))
+        return EXIT_USAGE
+    except ProjectCreateFailed as exc:
+        _err(str(exc))
+        return EXIT_ERROR
     except SendFailed as exc:
         _err(str(exc))
         return EXIT_ERROR
@@ -497,6 +518,38 @@ def _cmd_new(args: argparse.Namespace, resolved: config.Resolved) -> int:
             args.message, session=_make_session(settings), project=args.project
         )
     return _report_send(args, result)
+
+
+def _cmd_new_project(args: argparse.Namespace, resolved: config.Resolved) -> int:
+    settings = resolved.settings
+    name = project_service.validate_name(args.name)
+
+    if args.dry_run:
+        payload = {"dry_run": True, "name": name}
+        _emit(args, payload, f"would create project {name!r}")
+        return EXIT_OK
+
+    if not args.yes:
+        if not sys.stdin.isatty():
+            _err("refusing to create a project without --yes when stdin is not a terminal")
+            return EXIT_USAGE
+        if not _confirm_project(name):
+            print("cancelled")
+            return EXIT_OK
+
+    with sync_lock(paths.lock_path(), timeout_s=0):
+        project = project_service.create_project(name, session=_make_session(settings))
+    payload = {"name": project.name, "project_id": project.project_id}
+    text = project.name + (f"  ({project.project_id})" if project.project_id else "")
+    if not args.quiet:
+        print(f"created: {project.name}", file=sys.stderr)
+    _emit(args, payload, text)
+    return EXIT_OK
+
+
+def _confirm_project(name: str) -> bool:
+    print(f"Create project {name!r} in ChatGPT", file=sys.stderr)
+    return input("Proceed? [y/N] ").strip().lower() in {"y", "yes"}
 
 
 def _confirm(action: str, label: str, message: str) -> bool:

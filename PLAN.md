@@ -444,6 +444,9 @@ session-level state lives in `docs/HANDOFF.md`; this list records scope.
     `chats`/`fetch`/`search`/`send`/`new`, project membership in schema v4, MCP
     `projects` plus `project` parameters, create/send inside a project. ✅ 0.4.0
     (design and UI verification: `docs/PROJECTS-PLAN.md`)
+16. **Create a project** — `new-project` / `create-project`, MCP
+    `create_project`, name-only creation with a read-back check and an
+    appear-check before success. ✅ 0.5.0
 
 Deviations recorded during the rework:
 
@@ -461,6 +464,7 @@ Deviations recorded during the rework:
   loop covers the need today; if built, use `fetch --from-file`, not variadic
   arguments.
 - Edit/delete/rename and branch switching remain deliberately out of scope.
-- Project-level writes and files remain out of scope; see `docs/PROJECTS-PLAN.md`.
+- Project management beyond creation — rename, delete, pin, memory, icon, files,
+  instructions — remains out of scope; see `docs/PROJECTS-PLAN.md`.
 - PyPI publication is **not planned** (2026-11-01). Install from git or a local
   clone; `uv tool install git+…` covers other machines.

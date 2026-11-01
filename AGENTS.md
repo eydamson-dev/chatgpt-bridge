@@ -23,18 +23,18 @@ not a disposable cache.
 
 ## Hard rules
 
-- **Writes are explicit and confirmed.** `send_message` and `create_chat` are the
-  only write paths. Never send without an explicit user request. CLI requires an
-  interactive prompt or `--yes`; MCP requires `confirm=true` and, for
-  `send_message`, the `expected_chat_id` from a dry run. One message per call,
-  no retries after submit, no bulk sending, no renaming, deleting, or branch
-  switching.
+- **Writes are explicit and confirmed.** `send_message`, `create_chat`, and
+  `create_project` are the only write paths. Never send or create without an
+  explicit user request. CLI requires an interactive prompt or `--yes`; MCP
+  requires `confirm=true` and, for `send_message`, the `expected_chat_id` from a
+  dry run. One message per call, no retries after submit, no bulk sending, no
+  renaming, deleting, or branch switching.
 - **On demand only.** Do not add bulk sync, backfill, history walking, or
   background refresh. One named chat is fetched per request.
-- **Projects are read-only at the project level.** Reading projects and their
-  chats, and creating/sending inside a project, are supported. Creating,
-  renaming, deleting, or pinning a project, and changing its files or
-  instructions, are not.
+- **Projects: create and use, never manage.** Reading projects and their chats,
+  creating/sending inside a project, and creating one empty project by name are
+  supported. Renaming, deleting, or pinning a project, and changing its memory,
+  icon, files, or instructions, are not.
 - **Never store or log a project name as if it were safe.** Project names and
   IDs are personal data: they may be stored locally and shown to the user, but
   they never go into logs.

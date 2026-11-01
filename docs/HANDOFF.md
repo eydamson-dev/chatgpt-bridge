@@ -5,14 +5,15 @@ not history. Update it at the end of every milestone: rewrite the "Current state
 and "Next step" sections, and append to "Decisions" and "Gotchas" only when
 something durable was learned.
 
-Last updated: 2026-11-01 (0.4.0 ChatGPT Projects)
+Last updated: 2026-11-01 (0.5.0 create a project)
 
 ## What this project is
 
 A CLI and MCP server that pull one ChatGPT conversation at a time out of a
 logged-in Chromium browser (CDP) and store it in a local SQLite database for
 reading and search. They can also send one explicitly confirmed message to an
-existing chat, or create one new chat with one message.
+existing chat, create one new chat with one message, and create one empty
+project with a name.
 
 - **Repository:** <https://github.com/eydamson-dev/chatgpt-bridge> (public, MIT).
   The default and only branch is `main`. CI triggers on `main` and on pull
@@ -23,14 +24,15 @@ existing chat, or create one new chat with one message.
 - **On demand only.** Nothing scans or mirrors the user's chat history.
 - **The local store is not a disposable cache.** Chats you have not fetched are
   not stored anywhere locally, so `forget`/`reset` removes them from this tool.
-- **Writes are narrow and confirmed.** `send_message` and `create_chat` are the
-  only write paths. No edit, delete, rename, branch switching, or bulk sends.
+- **Writes are narrow and confirmed.** `send_message`, `create_chat`, and
+  `create_project` are the only write paths. No edit, delete, rename, branch
+  switching, or bulk sends.
 - Full design: `../PLAN.md`. Write decisions:
   `SEND-MESSAGE-DESIGN.md`. Hard rules: `../AGENTS.md`.
 
 ## Current state
 
-Version **0.4.0**. Working, verified against a live browser (Brave on
+Version **0.5.0**. Working, verified against a live browser (Brave on
 `127.0.0.1:9222`):
 
 - Target resolution by URL, full ID, ID prefix, exact title, unique title
@@ -53,13 +55,17 @@ Version **0.4.0**. Working, verified against a live browser (Brave on
 - `send` appends one confirmed message to an existing chat; `new` creates a chat
   with one message. Both wait for the reply and refresh the local copy.
   `--dry-run` resolves without a page or a send; `--yes` skips the prompt.
-- MCP server exposes ten tools: `status`, `chats`, `fetch_chat`, `get_chat`,
+- `new-project` (alias `create-project`) creates one empty project. It sets the
+  name only, verifies the field reads back exactly before clicking Create, and
+  confirms the project appeared (list row or project URL) before reporting
+  success. `--dry-run` and `--yes` behave as on `new`.
+- MCP server exposes eleven tools: `status`, `chats`, `fetch_chat`, `get_chat`,
   `search_chats`, `forget_chat`, `doctor`, `send_message`, `create_chat`,
-  `projects`. Five of them accept a `project` argument.
+  `create_project`, `projects`. Five of them accept a `project` argument.
   `send_message` is a dry run unless `confirm=true` and `expected_chat_id`
   matches; `create_chat` requires `confirm=true`. Chat text is wrapped as
   untrusted content.
-- 287 unit tests, 4 opt-in read live tests, and 2 gated live send tests pass;
+- 311 unit tests, 4 opt-in read live tests, and 2 gated live send tests pass;
   `ruff` and `mypy --strict` are clean on Python 3.12 and 3.14.
 - The built wheel includes all three migrations, installs into a clean virtual
   environment, and both entry points work. `.github/workflows/ci.yml` repeats
@@ -88,6 +94,7 @@ src/chatgpt_bridge/
   resolve.py        target -> chat id (URL/ID/prefix/title), pure
   fetch.py          fetch service: stored hit, refresh, save, fetch log
   send.py           explicit write service: send one, create one, send log
+  project.py        explicit write service: create one empty project
   query.py          local-store reads: list, get, search, render, envelope
   store.py          SQLite schema, migrations, FTS, fetch/send logs
   adapters/chatgpt.py   all ChatGPT selectors and labels
@@ -154,7 +161,7 @@ about how this user works, not about the code.
 
 It is a copy of procedure, so it drifts. **When a command, flag, exit code, or
 rule changes, update the skill in the same session.** Check its flags against
-`chatgpt-bridge <command> --help`. The skill's last sync was 0.4.0.
+`chatgpt-bridge <command> --help`. The skill's last sync was 0.5.0.
 
 The global `~/.config/opencode/AGENTS.md` has a short `ChatGPT Conversations`
 section that makes agents load the skill before any ChatGPT action. It is the
@@ -187,14 +194,15 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
 
 ## Invariants (do not break)
 
-1. Reads by default. Only `send_message` and `create_chat` write, both confirmed,
-   one message per call. No edit, delete, rename, branch switching, or bulk.
+1. Reads by default. Only `send_message`, `create_chat`, and `create_project`
+   write, all confirmed, one object per call. No edit, delete, rename, branch
+   switching, or bulk. Project creation sets a name and nothing else.
 2. No credentials. Never read cookies, tokens, headers, or profile files.
 3. Own tabs only, closed in `finally`; never `browser.close()`.
 4. Logs never contain chat text, titles, or URLs.
 5. Chat text is untrusted data; MCP output wraps it in the envelope.
 6. `show`/`search`/`get_chat` never open a page. `chats` may load the sidebar
-   for lookup; `fetch`, `send`, and `new` open their own tab.
+   for lookup; `fetch`, `send`, `new`, and `new-project` open their own tab.
 7. The local SQLite database is the product's storage, not a throwaway cache:
    conversations the user has not fetched exist nowhere locally.
 8. Title lookup reads the visible sidebar only, never scrolls.
@@ -258,6 +266,15 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
 - **2026-11-01 — store both project ID and name.** `project_id` (`g-p-<hex>`) is
   authoritative; `project` is the display name and may go stale after a rename.
   Both are treated as personal data and never logged.
+- **2026-11-01 — project creation is in scope for 0.5.0, name only.** The user
+  asked for it after asking why the tool could not create a project. Creation is
+  limited to one empty project with a name: the dialog's memory, icon, and
+  colour controls are never touched, and rename/delete/pin/files/instructions
+  stay out. Verified live by creating `chatgpt-bridge create test`.
+- **2026-11-01 — creation is verified, not assumed.** The name must read back
+  from the field exactly, and the project must appear (list row or project URL)
+  before success is reported. A timeout says "check before retrying" instead of
+  retrying, because a silent retry would create a duplicate project.
 - **2026-11-01 — empty searches explain themselves.** A hitless `search` says
   that titles are not indexed and how to fetch from the sidebar; if the term
   matches a stored title it points at `show` instead. This keeps the
@@ -326,6 +343,16 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
   `/g/g-p-<id>/c/<chat-id>`; after a send the address bar shows the slugged
   `/g/g-p-<id>-<project-slug>/c/<chat-id>`. `chat_id_from_url()` handles both,
   `CHAT_URL_RE` handles neither.
+- **The sidebar "Add new project" button is covered by an overlay.** A plain
+  `page.click('button[aria-label="Add new project"]')` times out: the Projects
+  section header and the sidebar scroll container intercept pointer events. The
+  button is clicked in-page (`OPEN_PROJECT_DIALOG_JS`) instead.
+- **The create dialog has exactly one text field.** `#chatgpt-project-name`
+  (name `project-name`, placeholder `Copenhagen Trip`); `Create project` stays
+  disabled until it has text. The same dialog also carries a "Default memory"
+  toggle and an icon/colour control — never touch them.
+- **After Create, the page navigates to the project.** The URL becomes
+  `/g/g-p-<id>/project`, which is where `create_project` gets the ID from.
 - **`/projects` only lists chats for expanded projects.** Expand the project
   named in the request and diff the link set before and after, which also
   excludes links belonging to other projects.
@@ -355,9 +382,9 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
 - Only the displayed branch is stored; alternative count is best-effort.
 - Attachments: names and types only, files not downloaded.
 - Archived chats are unreachable.
-- Project chats are reachable only by URL in 0.3.1. They are no longer
-  undiscoverable by accident: `docs/PROJECTS-PLAN.md` records the verified UI
-  and the plan to expose them in 0.4.0.
+- Projects can be created with a name, but not renamed, deleted, or pinned, and
+  their memory, icon, files, and instructions are unreachable. A project created
+  by mistake has to be removed in the ChatGPT UI.
 - Linux verified. macOS and Windows are untested.
 - Writes are one message per call; no edit, delete, rename, or branch switching.
 - A reply timeout leaves the send `unknown`; the tool never retries.
@@ -365,15 +392,15 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
 
 ## Next step
 
-Nothing is in flight. Milestones 1–15 in `PLAN.md` §16 are done; 0.4.0 is
+Nothing is in flight. Milestones 1–16 in `PLAN.md` §16 are done; 0.5.0 is
 verified; all unit tests, 4 read live tests, and 2 gated send live tests pass.
 `docs/ACCEPTANCE.md` records the 0.3.0 feature run and the 0.3.1/0.4.0
 additions. `docs/PROJECTS-PLAN.md` remains the design record for projects —
 read it before changing project resolution or the adapter.
 
 Deliberately not built: `fetch a b c` for several targets, edit/delete/rename
-and branch switching, project-level writes (create/rename/delete/pin, files,
-instructions), and PyPI publication.
+and branch switching, project management beyond creation (rename/delete/pin,
+memory, icon, files, instructions), and PyPI publication.
 
 The user verified the CLI by hand on 2026-11-01: `doctor`, `chats`, `chats
 --stored`, `fetch`, `show`, `search`, dry run, prompt cancel, `send --yes`, and

@@ -479,3 +479,125 @@ def test_create_chat_in_project_requires_a_message() -> None:
     with pytest.raises(chatgpt.SendFailed, match="empty"):
         adapter.create_chat_in_project("Test project", "  ")
     assert page.clicks == []
+
+
+class _ProjectCreatePage:
+    """Fake /projects page with the create dialog."""
+
+    def __init__(
+        self,
+        *,
+        button: bool = True,
+        accepts_name: bool = True,
+        appears: bool = True,
+        final_url: str = "https://chatgpt.com/projects",
+        existing: tuple[str, ...] = ("Test project",),
+    ) -> None:
+        self.url = chatgpt.PROJECTS_URL
+        self.dialog_open = False
+        self.name = ""
+        self.names = list(existing)
+        self.clicks: list[str] = []
+        self._button = button
+        self._accepts_name = accepts_name
+        self._appears = appears
+        self._final_url = final_url
+
+    def wait_for_selector(
+        self, selector: str, timeout: int | None = None, state: str = "attached"
+    ) -> None:
+        if selector == chatgpt.PROJECT_ROW:
+            return
+        if selector == chatgpt.PROJECT_CREATE_DIALOG:
+            if state == "hidden":
+                if self.dialog_open:
+                    raise RuntimeError("dialog is still open")
+                return
+            if not self.dialog_open:
+                raise RuntimeError("dialog did not open")
+            return
+        raise AssertionError(f"unexpected selector: {selector}")
+
+    def evaluate(self, script: str) -> object:
+        if script == chatgpt.OPEN_PROJECT_DIALOG_JS:
+            if not self._button:
+                return {"clicked": False}
+            self.dialog_open = True
+            return {"clicked": True}
+        if script == chatgpt.EXTRACT_PROJECTS_JS:
+            return {"projects": [{"name": name, "hasChats": False} for name in self.names]}
+        raise AssertionError(f"unexpected script: {script[:40]}")
+
+    def fill(self, selector: str, value: str) -> None:
+        assert selector == chatgpt.PROJECT_NAME_INPUT
+        self.name = value if self._accepts_name else value + "x"
+
+    def input_value(self, selector: str) -> str:
+        assert selector == chatgpt.PROJECT_NAME_INPUT
+        return self.name
+
+    def click(self, selector: str, timeout: int | None = None) -> None:
+        self.clicks.append(selector)
+        if selector == chatgpt.PROJECT_CREATE_SUBMIT:
+            self.dialog_open = False
+            self.url = self._final_url
+            if self._appears:
+                self.names.append(self.name)
+
+
+def test_create_project_returns_the_new_project() -> None:
+    project_id = "g-p-6ae70048e0988191babe7d3b4bd2619f"
+    page = _ProjectCreatePage(final_url=f"https://chatgpt.com/g/{project_id}-copenhagen/project")
+    adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
+    project = adapter.create_project("Copenhagen Trip")
+    assert project.name == "Copenhagen Trip"
+    assert project.project_id == project_id
+    assert page.clicks == [chatgpt.PROJECT_CREATE_SUBMIT]
+
+
+def test_create_project_trims_the_name() -> None:
+    page = _ProjectCreatePage()
+    adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
+    assert adapter.create_project("  Trip  ").name == "Trip"
+    assert page.name == "Trip"
+
+
+def test_create_project_requires_a_name() -> None:
+    page = _ProjectCreatePage()
+    adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
+    with pytest.raises(chatgpt.ProjectCreateFailed, match="empty"):
+        adapter.create_project("   ")
+    assert page.clicks == []
+
+
+def test_create_project_rejects_a_long_name() -> None:
+    page = _ProjectCreatePage()
+    adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
+    with pytest.raises(chatgpt.ProjectCreateFailed, match="longer than"):
+        adapter.create_project("x" * (chatgpt.PROJECT_NAME_MAX + 1))
+    assert page.clicks == []
+
+
+def test_create_project_refuses_when_the_field_changes_the_name() -> None:
+    page = _ProjectCreatePage(accepts_name=False)
+    adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
+    with pytest.raises(chatgpt.ProjectCreateFailed, match="did not accept"):
+        adapter.create_project("Trip")
+    assert chatgpt.PROJECT_CREATE_SUBMIT not in page.clicks
+
+
+def test_create_project_reports_a_missing_control() -> None:
+    page = _ProjectCreatePage(button=False)
+    adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
+    with pytest.raises(chatgpt.ProjectCreateFailed, match="Add new project"):
+        adapter.create_project("Trip")
+
+
+def test_create_project_reports_a_project_that_never_appears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chatgpt, "PROJECT_SETTLE_TIMEOUT_S", 0.3)
+    page = _ProjectCreatePage(appears=False)
+    adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
+    with pytest.raises(chatgpt.ProjectCreateFailed, match="before retrying"):
+        adapter.create_project("Trip")

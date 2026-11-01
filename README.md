@@ -155,8 +155,8 @@ OpenCode, in `~/.config/opencode/opencode.json`:
 ```
 
 Restart the client, or it may pick the config up live. The seven read tools are
-safe to leave enabled; `send_message` and `create_chat` still require
-`confirm=true`, so enable the server per session if you prefer.
+safe to leave enabled; `send_message`, `create_chat`, and `create_project` still
+require `confirm=true`, so enable the server per session if you prefer.
 
 ## Browser setup
 
@@ -211,6 +211,8 @@ chatgpt-bridge send "<title>" "Continue" --yes  # no prompt
 chatgpt-bridge send "<title>" "Continue" --dry-run
 chatgpt-bridge new "Start a new plan"           # prompts, creates a chat
 chatgpt-bridge new "Start a new plan" --yes
+chatgpt-bridge new-project "Copenhagen Trip"    # prompts, creates a project
+chatgpt-bridge new-project "Copenhagen Trip" --dry-run
 ```
 
 `--json` works before or after the subcommand on every command.
@@ -254,8 +256,18 @@ chatgpt-bridge send "Plan" "Continue" --project "My project"
 - A project chat lives at `/g/<project>/c/<chat>`; the tool uses that URL, since
   the plain `/c/<id>` route does not open it.
 
-Creating, renaming, deleting, or pinning a project, and managing its files or
-instructions, are **not** supported.
+`new-project "Name"` creates one empty project. It sets the name and nothing
+else: the dialog's memory, icon, and colour controls are left alone, and no
+instructions or files are added.
+
+```bash
+chatgpt-bridge new-project "Copenhagen Trip"          # prompts
+chatgpt-bridge new-project "Copenhagen Trip" --yes    # no prompt
+chatgpt-bridge new-project "Copenhagen Trip" --dry-run
+```
+
+Renaming, deleting, or pinning a project, and changing its memory, icon, files,
+or instructions, are **not** supported.
 
 ### Searching
 

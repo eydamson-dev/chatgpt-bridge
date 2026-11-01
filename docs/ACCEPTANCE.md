@@ -191,3 +191,28 @@ and the `chatgpt-bridge test` project.
 
 - 287 offline tests, 4 read live tests, 2 gated send live tests.
 - `ruff` and `mypy --strict` clean; wheel contains all four migrations.
+
+## 0.5.0 — create a project
+
+Verified 2026-11-01 against the live browser.
+
+| Feature | Result | Evidence |
+|---|---|---|
+| `new-project NAME --dry-run` | pass | `would create project 'chatgpt-bridge create test'` |
+| `new-project NAME --yes` | pass | `created: chatgpt-bridge create test`, ID `g-p-6ae7251f…` |
+| Name trimming | pass | `"  chatgpt-bridge create test  "` created without the spaces |
+| Project appears in the list | pass | `projects` listed it first, above the two existing projects |
+| Project ID captured | pass | returned from `/g/g-p-<id>/project` after Create |
+| `--json` dry run | pass | `{"dry_run": true, "name": "another test"}` |
+| Empty name | pass (unit) | exit `2`, `project name is empty` |
+| Field alters the name | pass (unit) | refused, Create never clicked |
+| Project never appears | pass (unit) | fails with "check … before retrying" |
+| Duplicate protection | by design | no retry after a timeout; nothing created twice |
+
+No gated live test was added: creating a project on every CI run would leave
+clutter in the user's account, so the write was verified by hand once.
+
+### Test totals at 0.5.0
+
+- 311 offline tests, 4 read live tests, 2 gated send live tests.
+- `ruff` and `mypy --strict` clean.

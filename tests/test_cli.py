@@ -9,6 +9,7 @@ from chatgpt_bridge import cli as cli_module
 from chatgpt_bridge import store
 from chatgpt_bridge.cli import (
     EXIT_BROWSER,
+    EXIT_ERROR,
     EXIT_NOT_FOUND,
     EXIT_OK,
     EXIT_UNKNOWN,
@@ -227,6 +228,56 @@ def test_send_requires_yes_without_a_terminal(
 def test_new_dry_run(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["new", "hello", "--dry-run"]) == EXIT_OK
     assert "would create a new chat" in capsys.readouterr().out
+
+
+def test_new_project_dry_run(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["new-project", "  Copenhagen Trip  ", "--dry-run"]) == EXIT_OK
+    assert "would create project 'Copenhagen Trip'" in capsys.readouterr().out
+
+
+def test_new_project_requires_yes_without_a_terminal(
+    seeded: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["new-project", "Copenhagen Trip"]) == EXIT_USAGE
+    assert "refusing to create a project" in capsys.readouterr().err
+
+
+def test_new_project_creates(
+    seeded: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chatgpt_bridge.adapters.chatgpt import ProjectRef
+
+    calls: list[str] = []
+
+    def fake_create(name: str, *, session: object = None) -> ProjectRef:
+        calls.append(name)
+        return ProjectRef(name=name, project_id="g-p-abc")
+
+    monkeypatch.setattr(cli_module.project_service, "create_project", fake_create)
+    assert main(["new-project", "Copenhagen Trip", "--yes"]) == EXIT_OK
+    out = capsys.readouterr()
+    assert "Copenhagen Trip  (g-p-abc)" in out.out
+    assert calls == ["Copenhagen Trip"]
+
+
+def test_new_project_reports_a_failure(
+    seeded: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chatgpt_bridge.adapters.chatgpt import ProjectCreateFailed
+
+    def fake_create(name: str, *, session: object = None) -> object:
+        raise ProjectCreateFailed("the project did not appear after clicking Create")
+
+    monkeypatch.setattr(cli_module.project_service, "create_project", fake_create)
+    assert main(["new-project", "Trip", "--yes"]) == EXIT_ERROR
+    assert "did not appear" in capsys.readouterr().err
+
+
+def test_new_project_rejects_an_empty_name(
+    seeded: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["new-project", "   ", "--dry-run"]) == EXIT_USAGE
+    assert "empty" in capsys.readouterr().err
 
 
 def test_send_prints_the_reply(

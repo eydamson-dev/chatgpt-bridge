@@ -51,8 +51,14 @@ PROJECTS_URL = f"{BASE_URL}/projects"
 PROJECT_ROW = "div[data-project-row]"
 PROJECT_TOGGLE = 'button[aria-label="Toggle project"]'
 PROJECT_NEW_CHAT = 'button[aria-label="Start new chat in project"]'
+PROJECT_CREATE_BUTTON = 'button[aria-label="Add new project"]'
+PROJECT_CREATE_DIALOG = 'div[role="dialog"]'
+PROJECT_NAME_INPUT = "#chatgpt-project-name"
+PROJECT_CREATE_SUBMIT = f'{PROJECT_CREATE_DIALOG} button:text-is("Create project")'
+PROJECT_NAME_MAX = 100
 PROJECT_CHAT_LIMIT = 50
 PROJECT_LINK_TIMEOUT_MS = 8_000
+PROJECT_DIALOG_TIMEOUT_MS = 8_000
 PROJECT_SETTLE_TIMEOUT_S = 10.0
 PROJECT_ID_RE = re.compile(r"^(g-p-[0-9a-f]+)$")
 # Both the plain DOM form and the slugged address-bar form.
@@ -181,6 +187,18 @@ EXTRACT_PROJECTS_JS = """
 }
 """
 
+OPEN_PROJECT_DIALOG_JS = """
+() => {
+  // The sidebar control is covered by the section header, so Playwright's
+  // actionability check never passes. Click it in-page instead.
+  const button = document.querySelector('button[aria-label="Add new project"]')
+    || document.querySelector('button[data-app-action-sidebar-project-create]');
+  if (!button) return { clicked: false };
+  button.click();
+  return { clicked: true };
+}
+"""
+
 PROJECT_LINKS_JS = """
 () => {
   const out = [];
@@ -241,6 +259,10 @@ class LoginRequired(RuntimeError):
 
 class ChatNotFound(RuntimeError):
     """The chat URL did not load a conversation."""
+
+
+class ProjectCreateFailed(RuntimeError):
+    """The project was not created; nothing is claimed about the account."""
 
 
 class SendFailed(RuntimeError):
@@ -358,6 +380,65 @@ class ChatGPTAdapter:
             refs = _dedupe_refs(_parse_project_links(page.evaluate(PROJECT_LINKS_JS), wanted))
         revealed = [ref for ref in refs if ref.id not in before]
         return revealed[:limit] if revealed else refs[:limit]
+
+    def create_project(self, name: str) -> ProjectRef:
+        """Create one empty project and confirm it appeared.
+
+        Only the name is set. The dialog's memory, icon, and colour controls are
+        left untouched, and nothing is created until the name reads back exactly.
+        """
+        wanted = name.strip()
+        if not wanted:
+            raise ProjectCreateFailed("project name is empty")
+        if len(wanted) > PROJECT_NAME_MAX:
+            raise ProjectCreateFailed(f"project name is longer than {PROJECT_NAME_MAX} characters")
+        with self.browser.open_tab(PROJECTS_URL) as page:
+            page.wait_for_selector(PROJECT_ROW, timeout=LOAD_TIMEOUT_MS)
+            if not (page.evaluate(OPEN_PROJECT_DIALOG_JS) or {}).get("clicked"):
+                raise ProjectCreateFailed(
+                    "the 'Add new project' control is not on the projects page; "
+                    "the layout may have changed"
+                )
+            try:
+                page.wait_for_selector(PROJECT_CREATE_DIALOG, timeout=PROJECT_DIALOG_TIMEOUT_MS)
+            except Exception as exc:
+                raise ProjectCreateFailed("the create-project dialog did not open") from exc
+
+            page.fill(PROJECT_NAME_INPUT, wanted)
+            typed = page.input_value(PROJECT_NAME_INPUT)
+            if _normalise(typed) != _normalise(wanted):
+                self._close_project_dialog(page)
+                raise ProjectCreateFailed(
+                    "the name field did not accept the name exactly; nothing was created"
+                )
+
+            page.click(PROJECT_CREATE_SUBMIT, timeout=PROJECT_LINK_TIMEOUT_MS)
+            self._wait_for_project(page, wanted)
+            project_id = _project_id_from_url(page.url)
+        return ProjectRef(name=wanted, project_id=project_id)
+
+    def _wait_for_project(self, page: Any, name: str) -> None:
+        """Wait until the dialog is gone and the project is visible.
+
+        A closed dialog alone proves nothing, so the name must also appear in the
+        list or the page must move to the project URL. Otherwise the caller is
+        told to check before retrying, which keeps a duplicate from being created.
+        """
+        deadline = time.monotonic() + PROJECT_SETTLE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            time.sleep(max(self.page_delay_s, 0.2))
+            if PROJECT_URL_RE.match(page.url):
+                return
+            if _dialog_closed(page) and name in _project_names(page):
+                return
+        raise ProjectCreateFailed(
+            "the project did not appear after clicking Create; check the projects "
+            "page before retrying, so a duplicate is not created"
+        )
+
+    def _close_project_dialog(self, page: Any) -> None:
+        with contextlib.suppress(Exception):
+            page.click(f'{PROJECT_CREATE_DIALOG} button:text-is("Close dialog")')
 
     def _settled_projects(self, page: Any) -> dict[str, Any]:
         """Read the project list once it stops growing.
@@ -631,6 +712,19 @@ def _parse_sidebar(payload: dict[str, Any]) -> list[ChatRef]:
 def _project_id_from_url(url: str) -> str | None:
     match = PROJECT_URL_RE.match(url) or PROJECT_CHAT_URL_RE.match(url)
     return match.group(1) if match else None
+
+
+def _dialog_closed(page: Any) -> bool:
+    try:
+        page.wait_for_selector(PROJECT_CREATE_DIALOG, state="hidden", timeout=500)
+    except Exception:
+        return False
+    return True
+
+
+def _project_names(page: Any) -> set[str]:
+    payload = page.evaluate(EXTRACT_PROJECTS_JS) or {}
+    return {str(entry.get("name") or "").strip() for entry in payload.get("projects", [])}
 
 
 def _chat_id_from_project_url(url: str) -> str:

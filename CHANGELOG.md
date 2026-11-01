@@ -3,6 +3,32 @@
 User-visible changes only. Implementation detail lives in git history,
 `PLAN.md`, and `docs/HANDOFF.md`.
 
+## 0.5.0 — create a project
+
+Projects can now be created from the tool, not only used.
+
+### Added
+
+- `chatgpt-bridge new-project "Name"` (alias `create-project`) creates one empty
+  ChatGPT project. It prompts, supports `--dry-run`, and needs `--yes` when
+  stdin is not a terminal.
+- MCP `create_project(name, confirm=False)`: a dry run unless `confirm=true`.
+
+### Behaviour
+
+- Only the name is set. The dialog's memory, icon, and colour controls are left
+  untouched, and no instructions or files are added.
+- The name is read back from the field before Create is clicked, and the project
+  must appear in the list (or the page must move to its URL) before success is
+  reported. Otherwise the command says to check the page first, so a retry does
+  not create a duplicate.
+- Project names are never written to logs.
+
+### Not supported
+
+- Renaming, deleting, or pinning a project, and changing its memory, icon,
+  files, or instructions.
+
 ## 0.4.0 — ChatGPT Projects
 
 Reads and writes now understand ChatGPT Projects. Chats fetched from a project
