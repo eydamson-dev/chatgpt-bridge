@@ -255,3 +255,93 @@ def test_config_show(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["config", "--show"]) == EXIT_OK
     out = capsys.readouterr().out
     assert "lookup_limit" in out and "cdp_url" in out
+
+
+# ---------------------------------------------------------------- projects
+
+
+class _StubBrowser:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def __enter__(self) -> _StubBrowser:
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        return False
+
+    def connect(self) -> None:
+        pass
+
+
+def _stub_adapter(monkeypatch: pytest.MonkeyPatch, projects=None, refs=None) -> None:
+    from chatgpt_bridge.adapters.chatgpt import ProjectRef
+
+    class _Adapter:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def list_projects(self):
+            return projects or [
+                ProjectRef("Test project"),
+                ProjectRef("Empty project", has_chats=False),
+            ]
+
+        def list_project_chats(self, project: str, limit: int = 50):
+            return refs or []
+
+        def list_chats(self, scroll: bool = False, limit: int | None = None):
+            return refs or []
+
+    monkeypatch.setattr(cli_module, "Browser", _StubBrowser)
+    monkeypatch.setattr(cli_module, "ChatGPTAdapter", _Adapter)
+
+
+def test_projects_lists_names(
+    seeded: Path, capsys: pytest.CaptureFixture[str], monkeypatch
+) -> None:
+    _stub_adapter(monkeypatch)
+    assert main(["projects"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "Test project" in out
+    assert "(no chats)" in out
+
+
+def test_projects_json(seeded: Path, capsys: pytest.CaptureFixture[str], monkeypatch) -> None:
+    _stub_adapter(monkeypatch)
+    assert main(["--json", "projects"]) == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["name"] == "Test project"
+    assert payload[1]["has_chats"] is False
+
+
+def test_chats_stored_scoped_to_project(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--json", "chats", "--stored", "--project", "Other project"]) == EXIT_OK
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_chats_stored_project_empty_message(
+    seeded: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["chats", "--stored", "--project", "Other project"]) == EXIT_OK
+    assert "no stored chats in project 'Other project'" in capsys.readouterr().out
+
+
+def test_search_scoped_to_project(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--json", "search", "pkg-config", "--project", "Other project"]) == EXIT_OK
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == []
+    assert "in project 'Other project'" in captured.err
+
+
+def test_new_dry_run_mentions_the_project(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["new", "hello", "--dry-run", "--project", "Test project"]) == EXIT_OK
+    assert "would create in project 'Test project'" in capsys.readouterr().out
+
+
+def test_send_dry_run_scoped_to_project_shows_project_in_label(
+    seeded: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["send", "6ae5de7d", "hello", "--dry-run", "--project", "Test project"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "would send to" in out

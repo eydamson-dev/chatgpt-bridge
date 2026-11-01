@@ -20,9 +20,15 @@ class NotFound(LookupError):
     """The requested chat is not in the cache."""
 
 
-def list_cached(db_path: Path | None = None, limit: int | None = None) -> list[ChatSummary]:
+def list_cached(
+    db_path: Path | None = None,
+    limit: int | None = None,
+    project: str | None = None,
+) -> list[ChatSummary]:
     conn = store.connect(db_path)
     try:
+        if project:
+            return store.chat_summaries_in_project(conn, project, limit=_cap(limit))
         return store.chat_summaries(conn, limit=_cap(limit))
     finally:
         conn.close()
@@ -51,24 +57,30 @@ def search(
     db_path: Path | None = None,
     chat: str | None = None,
     limit: int | None = None,
+    project: str | None = None,
 ) -> list[SearchHit]:
     conn = store.connect(db_path)
     try:
         chat_id: str | None = None
         if chat:
+            summaries = (
+                store.chat_summaries_in_project(conn, project)
+                if project
+                else store.chat_summaries(conn)
+            )
             try:
-                resolved = resolve_from_cache(chat, store.chat_summaries(conn))
+                resolved = resolve_from_cache(chat, summaries)
             except AmbiguousTarget as exc:
                 raise NotFound(_ambiguous_message(str(exc), exc.candidates)) from exc
             if resolved is None:
                 raise NotFound(_missing_message(chat))
             chat_id = resolved.id
-        return store.search(conn, query, chat_id=chat_id, limit=_cap(limit))
+        return store.search(conn, query, chat_id=chat_id, limit=_cap(limit), project=project)
     finally:
         conn.close()
 
 
-def search_hint(query: str, db_path: Path | None = None) -> str:
+def search_hint(query: str, db_path: Path | None = None, project: str | None = None) -> str:
     """Explain a search that found nothing, using the local store only.
 
     Titles are not indexed, so a term that names a chat produces no hits. Saying
@@ -77,19 +89,29 @@ def search_hint(query: str, db_path: Path | None = None) -> str:
     term = query.strip()
     conn = store.connect(db_path)
     try:
-        summaries = store.chat_summaries(conn)
+        if project:
+            summaries = store.chat_summaries_in_project(conn, project)
+        else:
+            summaries = store.chat_summaries(conn)
     finally:
         conn.close()
     total = len(summaries)
     folded = term.casefold()
-    titled = [summary for summary in summaries if folded and folded in summary.title.casefold()]
+    titled = [s for s in summaries if folded and folded in s.title.casefold()]
     if titled:
         best = titled[0]
+        where = f" in project {best.project!r}" if best.project else ""
         return (
             f"no stored message contains {term!r}, but a stored chat is titled "
-            f"{best.title!r}. Read it with: chatgpt-bridge show {best.title!r}"
+            f"{best.title!r}{where}. Read it with: chatgpt-bridge show {best.title!r}"
         )
     plural = "chat is" if total == 1 else "chats are"
+    if project:
+        return (
+            f"no stored message contains {term!r}. Only {total} {plural} stored "
+            f"in project {project!r}, and chat titles are not searched. Fetch the "
+            f'chat first: chatgpt-bridge fetch "<title>" --project {project!r}'
+        )
     return (
         f"no stored message contains {term!r}. Only {total} {plural} stored, and "
         "chat titles are not searched. If you meant a chat from the sidebar, "
@@ -176,6 +198,7 @@ class ChatEnvelope:
     section: str | None
     fetched_at: str
     turns: list[dict[str, object]]
+    project: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -184,6 +207,7 @@ class ChatEnvelope:
             "url": self.url,
             "section": self.section,
             "fetched_at": self.fetched_at,
+            "project": self.project,
             "turns": self.turns,
         }
 
@@ -211,4 +235,5 @@ def envelope(chat: StoredChat, include_markdown: bool = True) -> ChatEnvelope:
         section=chat.section,
         fetched_at=chat.fetched_at,
         turns=turns,
+        project=chat.project,
     )

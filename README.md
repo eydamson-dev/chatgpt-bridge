@@ -198,6 +198,7 @@ chatgpt-bridge forget "<title>"          # remove one chat from the local store
 chatgpt-bridge export-raw                # JSON Lines dump
 chatgpt-bridge reset                     # delete the local store (prompts)
 chatgpt-bridge status                    # store size, last fetch, last send, log path
+chatgpt-bridge projects                  # ChatGPT projects by name
 
 chatgpt-bridge send "<title>" "Make a plan"     # prompts, then waits for the reply
 chatgpt-bridge send "<title>" "Continue" --yes  # no prompt
@@ -221,6 +222,34 @@ observed.
 
 If several chats match, nothing is fetched; the candidates are listed and you
 pick one. If nothing matches, `chats` shows what is available.
+
+### Projects
+
+A ChatGPT Project is a folder of chats with its own instructions and files. The
+tool can list projects, read their chats by title, and create or continue chats
+inside one.
+
+```bash
+chatgpt-bridge projects                          # names only
+chatgpt-bridge chats --project "My project"      # that project's chats (live)
+chatgpt-bridge fetch "Plan" --project "My project"
+chatgpt-bridge chats --stored --project "My project"
+chatgpt-bridge search "deploy" --project "My project"
+chatgpt-bridge new "Start the plan" --project "My project"
+chatgpt-bridge send "Plan" "Continue" --project "My project"
+```
+
+- Project **names** are what you type; the tool also stores each project's
+  stable `g-p-…` ID, so a rename does not break stored chats.
+- `chats --stored --project` and `search --project` work offline. `projects` and
+  `chats --project` (without `--stored`) open the project page.
+- A chat created with `--project` uses that project's instructions and files,
+  so replies may differ from a normal chat.
+- A project chat lives at `/g/<project>/c/<chat>`; the tool uses that URL, since
+  the plain `/c/<id>` route does not open it.
+
+Creating, renaming, deleting, or pinning a project, and managing its files or
+instructions, are **not** supported.
 
 ### Searching
 
@@ -293,7 +322,10 @@ If you have not installed the package, point at the clone's virtualenv instead:
 `/path/to/chatgpt-bridge/.venv/bin/chatgpt-bridge-mcp`.
 
 Tools: `status`, `chats`, `fetch_chat`, `get_chat`, `search_chats`,
-`forget_chat`, `doctor`, `send_message`, `create_chat`.
+`forget_chat`, `doctor`, `send_message`, `create_chat`, `projects`.
+
+`chats`, `fetch_chat`, `search_chats`, `send_message`, and `create_chat` accept
+a `project` argument.
 
 `fetch_chat` retrieves a chat. `get_chat` and `search_chats` read the local
 store only and never open a page. Chat text is returned inside an

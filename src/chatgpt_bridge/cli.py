@@ -69,20 +69,25 @@ def build_parser() -> argparse.ArgumentParser:
     add("status", help="local store size and last fetch")
     add("doctor", help="check browser, login, parser, and database")
 
+    add("projects", help="list ChatGPT projects")
+
     chats = add("chats", help="list chats")
     chats.add_argument("--stored", action="store_true", help="only chats already fetched")
     chats.add_argument("--limit", type=int)
+    chats.add_argument("--project", metavar="NAME", help="only chats in this project")
 
     fetch = add("fetch", help="fetch one chat into the local store")
     fetch.add_argument("target", help="chat URL, id, id prefix, or title")
     fetch.add_argument("--refresh", action="store_true", help="refetch even if already stored")
     fetch.add_argument("--format", choices=["text", "md", "json"], default="md")
+    fetch.add_argument("--project", metavar="NAME", help="resolve inside this project")
 
     send = add("send", help="send one message to an existing chat")
     send.add_argument("target", help="chat URL, id, id prefix, or title")
     send.add_argument("message", help="message to send")
     send.add_argument("--yes", action="store_true", help="do not prompt")
     send.add_argument("--dry-run", action="store_true", help="show the target without sending")
+    send.add_argument("--project", metavar="NAME", help="resolve inside this project")
 
     new = add(
         "new",
@@ -92,6 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     new.add_argument("message", help="first message")
     new.add_argument("--yes", action="store_true", help="do not prompt")
     new.add_argument("--dry-run", action="store_true", help="show the message without sending")
+    new.add_argument("--project", metavar="NAME", help="create the chat inside this project")
 
     show = add("show", help="print a stored chat")
     show.add_argument("target")
@@ -101,6 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     find.add_argument("query")
     find.add_argument("--chat", help="restrict to one stored chat")
     find.add_argument("--limit", type=int)
+    find.add_argument("--project", metavar="NAME", help="restrict to one project")
 
     forget = add("forget", help="remove one chat from the local store")
     forget.add_argument("target")
@@ -142,6 +149,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "config": _cmd_config,
         "status": _cmd_status,
         "doctor": _cmd_doctor,
+        "projects": _cmd_projects,
         "chats": _cmd_chats,
         "fetch": _cmd_fetch,
         "send": _cmd_send,
@@ -283,10 +291,24 @@ def _cmd_doctor(args: argparse.Namespace, resolved: config.Resolved) -> int:
     return EXIT_OK if report.ok else EXIT_ERROR
 
 
+def _cmd_projects(args: argparse.Namespace, resolved: config.Resolved) -> int:
+    settings = resolved.settings
+    with Browser(settings.cdp_url) as browser:
+        adapter = ChatGPTAdapter(browser, page_delay_s=min(settings.min_delay_s, 1.0))
+        projects = adapter.list_projects()
+    payload = [{"name": project.name, "has_chats": project.has_chats} for project in projects]
+    text = "\n".join(
+        f"{project.name[:60]}" + ("" if project.has_chats else "  (no chats)")
+        for project in projects
+    )
+    _emit(args, payload, text or "no projects on the projects page")
+    return EXIT_OK
+
+
 def _cmd_chats(args: argparse.Namespace, resolved: config.Resolved) -> int:
     settings = resolved.settings
     if args.stored:
-        rows = query.list_cached(limit=args.limit)
+        rows = query.list_cached(limit=args.limit, project=args.project)
         payload = [
             {
                 "id": row.id,
@@ -294,26 +316,51 @@ def _cmd_chats(args: argparse.Namespace, resolved: config.Resolved) -> int:
                 "url": row.url,
                 "turns": row.turn_count,
                 "fetched_at": row.fetched_at,
+                "project": row.project,
             }
             for row in rows
         ]
         text = "\n".join(
             f"{row.id[:8]}  {_turn_count(row.turn_count):>4}  {row.fetched_at[:10]}  "
-            f"{row.title[:60]}"
+            f"{_project_prefix(row.project)}{row.title[:60]}"
             for row in rows
         )
-        _emit(args, payload, text or "no stored chats yet; use: chatgpt-bridge fetch <target>")
+        empty = "no stored chats yet; use: chatgpt-bridge fetch <target>"
+        if args.project:
+            empty = f"no stored chats in project {args.project!r}"
+        _emit(args, payload, text or empty)
+        return EXIT_OK
+
+    limit = args.limit or settings.lookup_limit
+    if args.project:
+        with Browser(settings.cdp_url) as browser:
+            adapter = ChatGPTAdapter(browser, page_delay_s=min(settings.min_delay_s, 1.0))
+            refs = adapter.list_project_chats(args.project, limit=limit)
+        payload = [
+            {"id": ref.id, "title": ref.title, "url": ref.url, "project": ref.project}
+            for ref in refs
+        ]
+        text = "\n".join(f"{ref.id[:8]}  {ref.title[:60]}" for ref in refs)
+        _emit(args, payload, text or f"no chats in project {args.project!r}")
         return EXIT_OK
 
     with Browser(settings.cdp_url) as browser:
         adapter = ChatGPTAdapter(browser, page_delay_s=min(settings.min_delay_s, 1.0))
-        refs = adapter.list_chats(scroll=False, limit=args.limit or settings.lookup_limit)
+        refs = adapter.list_chats(scroll=False, limit=limit)
     payload = [
         {"id": ref.id, "title": ref.title, "url": ref.url, "section": ref.section} for ref in refs
     ]
     text = "\n".join(f"{ref.id[:8]}  {ref.section or '-':<8}  {ref.title[:60]}" for ref in refs)
     _emit(args, payload, text)
     return EXIT_OK
+
+
+def _project_prefix(project: str | None) -> str:
+    return f"[{project[:20]}] " if project else ""
+
+
+def _project_name(project: str | None, title: str) -> str:
+    return f"{project} / {title}" if project else title
 
 
 def _make_session(settings: config.Settings) -> Any:
@@ -336,6 +383,7 @@ def _cmd_fetch(args: argparse.Namespace, resolved: config.Resolved) -> int:
             refresh=args.refresh,
             session=_make_session(settings),
             lookup_limit=settings.lookup_limit,
+            project=args.project,
         )
     chat = result.chat
     payload = {
@@ -359,16 +407,26 @@ def _cmd_fetch(args: argparse.Namespace, resolved: config.Resolved) -> int:
 
 def _cmd_send(args: argparse.Namespace, resolved: config.Resolved) -> int:
     settings = resolved.settings
-    target = send_service.preview(args.target)
-    label = f'"{target.title}" ({target.id[:8]})' if target is not None else repr(args.target)
+    target = send_service.preview(args.target, project=args.project)
+    label = (
+        f'"{_project_name(target.project or args.project, target.title)}" ({target.id[:8]})'
+        if target is not None
+        else repr(args.target)
+    )
 
     if args.dry_run:
         payload = {
             "dry_run": True,
             "target": args.target,
+            "project": args.project,
             "resolved": None
             if target is None
-            else {"id": target.id, "title": target.title, "url": target.url},
+            else {
+                "id": target.id,
+                "title": target.title,
+                "url": target.url,
+                "project": target.project or args.project,
+            },
             "message": args.message,
         }
         text = f"would send to {label}: {_message_preview(args.message)}"
@@ -382,8 +440,10 @@ def _cmd_send(args: argparse.Namespace, resolved: config.Resolved) -> int:
             return EXIT_USAGE
         # Show the real chat title and ID, even for an uncached title.
         if target is None:
-            target = _resolve_live(settings, args.target)
-            label = f'"{target.title}" ({target.id[:8]})'
+            target = _resolve_live(settings, args.target, args.project)
+            label = (
+                f'"{_project_name(target.project or args.project, target.title)}" ({target.id[:8]})'
+            )
         if not _confirm("Send to", label, args.message):
             print("cancelled")
             return EXIT_OK
@@ -396,34 +456,46 @@ def _cmd_send(args: argparse.Namespace, resolved: config.Resolved) -> int:
             expected_chat_id=expected_chat_id,
             session=_make_session(settings),
             lookup_limit=settings.lookup_limit,
+            project=args.project,
         )
     return _report_send(args, result)
 
 
-def _resolve_live(settings: config.Settings, target: str) -> Resolved:
+def _resolve_live(settings: config.Settings, target: str, project: str | None = None) -> Resolved:
     with Browser(settings.cdp_url) as browser:
         adapter = ChatGPTAdapter(browser, page_delay_s=min(settings.min_delay_s, 1.0))
-        refs = adapter.list_chats(scroll=False, limit=settings.lookup_limit)
+        refs = (
+            adapter.list_project_chats(project, limit=settings.lookup_limit)
+            if project
+            else adapter.list_chats(scroll=False, limit=settings.lookup_limit)
+        )
     return resolve_with_listing(target, refs)
 
 
 def _cmd_new(args: argparse.Namespace, resolved: config.Resolved) -> int:
     settings = resolved.settings
+    where = f"in project {args.project!r}" if args.project else "a new chat"
     if args.dry_run:
-        payload = {"dry_run": True, "message": args.message}
-        _emit(args, payload, f"would create a new chat with: {_message_preview(args.message)}")
+        payload = {"dry_run": True, "message": args.message, "project": args.project}
+        _emit(
+            args,
+            payload,
+            f"would create {where} with: {_message_preview(args.message)}",
+        )
         return EXIT_OK
 
     if not args.yes:
         if not sys.stdin.isatty():
             _err("refusing to create a chat without --yes when stdin is not a terminal")
             return EXIT_USAGE
-        if not _confirm("Create a new chat and send", "a new conversation", args.message):
+        if not _confirm("Create a chat and send", where, args.message):
             print("cancelled")
             return EXIT_OK
 
     with sync_lock(paths.lock_path(), timeout_s=0):
-        result = send_service.create_chat(args.message, session=_make_session(settings))
+        result = send_service.create_chat(
+            args.message, session=_make_session(settings), project=args.project
+        )
     return _report_send(args, result)
 
 
@@ -486,7 +558,7 @@ def _cmd_show(args: argparse.Namespace, resolved: config.Resolved) -> int:
 
 
 def _cmd_search(args: argparse.Namespace, resolved: config.Resolved) -> int:
-    hits = query.search(args.query, chat=args.chat, limit=args.limit)
+    hits = query.search(args.query, chat=args.chat, limit=args.limit, project=args.project)
     payload = [
         {
             "chat_id": hit.chat_id,
@@ -501,7 +573,7 @@ def _cmd_search(args: argparse.Namespace, resolved: config.Resolved) -> int:
         f"{hit.chat_id[:8]}  [{hit.position}] {hit.role}\n  {hit.snippet}" for hit in hits
     )
     if not hits:
-        hint = query.search_hint(args.query)
+        hint = query.search_hint(args.query, project=args.project)
         # Keep stdout valid JSON for scripts, but still explain the empty result.
         if args.json and not args.quiet:
             print(hint, file=sys.stderr)

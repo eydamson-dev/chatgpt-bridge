@@ -32,10 +32,12 @@ def seed(
 
 def test_connect_creates_current_schema(tmp_path: Path) -> None:
     conn = store.connect(tmp_path / "bridge.db")
-    assert store.schema_version(conn) == store.SCHEMA_VERSION == 3
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 4
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"chats", "turns", "attachments", "fetch_log", "send_log", "meta"} <= tables
     assert "sync_runs" not in tables
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(chats)")}
+    assert {"project", "project_id"} <= columns
     conn.close()
 
 
@@ -75,17 +77,23 @@ def test_v1_database_is_migrated(tmp_path: Path) -> None:
     assert (tmp_path / "bridge.db.bak-1").exists()
 
 
-def test_v2_database_gains_send_log(tmp_path: Path) -> None:
+def test_v2_database_is_migrated_to_current(tmp_path: Path) -> None:
     path = tmp_path / "bridge.db"
     conn = store.connect(path)
+    # Wind the schema back to v2: no send_log and no project columns.
     conn.execute("DROP TABLE send_log")
+    conn.execute("DROP INDEX IF EXISTS idx_chats_project")
+    conn.execute("ALTER TABLE chats DROP COLUMN project")
+    conn.execute("ALTER TABLE chats DROP COLUMN project_id")
     conn.execute("PRAGMA user_version = 2")
     conn.close()
 
     conn = store.connect(path)
-    assert store.schema_version(conn) == 3
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 4
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "send_log" in tables
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(chats)")}
+    assert {"project", "project_id"} <= columns
     conn.close()
     assert (tmp_path / "bridge.db.bak-2").exists()
 
@@ -290,3 +298,82 @@ def test_delete_all(conn) -> None:
 
 def test_missing_chat_returns_none(conn) -> None:
     assert store.get_chat(conn, "nope") is None
+
+
+# ---------------------------------------------------------------- projects
+
+
+def test_save_chat_records_project(tmp_path: Path) -> None:
+    conn = store.connect(tmp_path / "bridge.db")
+    turns = [Turn(role="user", markdown="hi", text="hi")]
+    store.save_chat(
+        conn,
+        chat_id="c1",
+        title="Plan",
+        url="https://chatgpt.com/g/g-p-abc/c/c1",
+        turns=turns,
+        hash_value=store.content_hash(turns),
+        project="Test project",
+        project_id="g-p-abc",
+    )
+    summary = store.chat_summaries(conn)[0]
+    assert (summary.project, summary.project_id) == ("Test project", "g-p-abc")
+    chat = store.get_chat(conn, "c1")
+    assert chat is not None
+    assert (chat.project, chat.project_id) == ("Test project", "g-p-abc")
+    conn.close()
+
+
+def test_resave_without_project_keeps_the_membership(tmp_path: Path) -> None:
+    conn = store.connect(tmp_path / "bridge.db")
+    turns = [Turn(role="user", markdown="hi", text="hi")]
+    store.save_chat(
+        conn,
+        chat_id="c1",
+        title="Plan",
+        url="u",
+        turns=turns,
+        hash_value="h1",
+        project="Test project",
+        project_id="g-p-abc",
+    )
+    store.save_chat(conn, chat_id="c1", title="Plan", url="u", turns=turns, hash_value="h2")
+    summary = store.chat_summaries(conn)[0]
+    assert summary.project == "Test project"
+    assert summary.project_id == "g-p-abc"
+    conn.close()
+
+
+def test_chat_summaries_filter_by_project(conn) -> None:
+    turns = [Turn(role="user", markdown="hi", text="hi")]
+    store.save_chat(
+        conn,
+        chat_id="c1",
+        title="In project",
+        url="u",
+        turns=turns,
+        hash_value="h",
+        project="Test project",
+        project_id="g-p-abc",
+    )
+    seed(conn, chat_id="c2", title="Elsewhere")
+    assert [s.id for s in store.chat_summaries_in_project(conn, "Test project")] == ["c1"]
+    assert [s.id for s in store.chat_summaries(conn, project_id="g-p-abc")] == ["c1"]
+    assert len(store.chat_summaries(conn)) == 2
+
+
+def test_search_can_be_scoped_to_a_project(conn) -> None:
+    turns = [Turn(role="user", markdown="kubernetes notes", text="kubernetes notes")]
+    store.save_chat(
+        conn,
+        chat_id="c1",
+        title="In project",
+        url="u",
+        turns=turns,
+        hash_value="h",
+        project="Test project",
+        project_id="g-p-abc",
+    )
+    seed(conn, chat_id="c2", title="Elsewhere")
+    assert store.search(conn, "kubernetes", project="Test project")
+    assert store.search(conn, "kubernetes", project="Other project") == []

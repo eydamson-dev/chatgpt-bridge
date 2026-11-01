@@ -7,7 +7,11 @@ import pytest
 
 from chatgpt_bridge import send as send_service
 from chatgpt_bridge import store
-from chatgpt_bridge.adapters.chatgpt import ExtractedChat, ReplyTimeout
+from chatgpt_bridge.adapters.chatgpt import (
+    ExtractedChat,
+    ReplyTimeout,
+    chat_id_from_url,
+)
 from chatgpt_bridge.parse import ParsedTurn
 from chatgpt_bridge.store import ChatRef
 
@@ -32,6 +36,8 @@ class FakeSource:
         self.sent: list[tuple[str, str]] = []
         self.created: list[str] = []
         self.list_calls = 0
+        self.project_calls: list[str] = []
+        self.created_in_project: list[tuple[str, str]] = []
         self.failure: Exception | None = None
         self.reply = "reply"
 
@@ -39,14 +45,25 @@ class FakeSource:
         self.list_calls += 1
         return self.refs[:limit] if limit else self.refs
 
-    def send_message(self, chat_id: str, message: str) -> ExtractedChat:
+    def send_message(self, url_or_id: str, message: str) -> ExtractedChat:
+        chat_id = chat_id_from_url(url_or_id)
         self.sent.append((chat_id, message))
         if self.failure is not None:
             raise self.failure
         return extracted(chat_id, self.reply)
 
+    def list_project_chats(self, project: str, limit: int = 50) -> list[ChatRef]:
+        self.project_calls.append(project)
+        return self.refs[:limit] if self.refs else []
+
     def create_chat(self, message: str) -> ExtractedChat:
         self.created.append(message)
+        if self.failure is not None:
+            raise self.failure
+        return extracted(UUID, self.reply)
+
+    def create_chat_in_project(self, project: str, message: str) -> ExtractedChat:
+        self.created_in_project.append((project, message))
         if self.failure is not None:
             raise self.failure
         return extracted(UUID, self.reply)
@@ -193,3 +210,78 @@ def test_send_requires_a_session_for_an_uncached_target(tmp_path: Path) -> None:
     db = tmp_path / "bridge.db"
     with pytest.raises(Exception, match="no browser session"):
         send_service.send_message(f"https://chatgpt.com/c/{UUID}", "hello", db_path=db)
+
+
+# ---------------------------------------------------------------- projects
+
+
+def test_send_scoped_to_a_project_uses_the_project_listing(tmp_path: Path) -> None:
+    db = tmp_path / "bridge.db"
+    source = FakeSource([ChatRef(id=UUID, title="Plan", url="u", project="Test project")])
+    result = send_service.send_message(
+        "Plan", "hello", db_path=db, session=session_for(source), project="Test project"
+    )
+    assert result.outcome == "sent"
+    assert source.project_calls == ["Test project"]
+    assert source.list_calls == 0
+
+
+def test_send_records_the_project_on_the_stored_chat(tmp_path: Path) -> None:
+    db = tmp_path / "bridge.db"
+    source = FakeSource(
+        [
+            ChatRef(
+                id=UUID,
+                title="Plan",
+                url=f"https://chatgpt.com/g/g-p-abc/c/{UUID}",
+                project="Test project",
+                project_id="g-p-abc",
+            )
+        ]
+    )
+    send_service.send_message(
+        "Plan", "hello", db_path=db, session=session_for(source), project="Test project"
+    )
+    conn = store.connect(db)
+    chat = store.get_chat(conn, UUID)
+    assert chat is not None
+    assert chat.project == "Test project"
+    assert chat.project_id == "g-p-abc"
+    conn.close()
+
+
+def test_create_chat_in_project_routes_to_the_project_entry_point(tmp_path: Path) -> None:
+    db = tmp_path / "bridge.db"
+    source = FakeSource()
+    result = send_service.create_chat(
+        "hello", db_path=db, session=session_for(source), project="Test project"
+    )
+    assert result.outcome == "sent"
+    assert source.created_in_project == [("Test project", "hello")]
+    assert source.created == []
+    assert result.chat is not None
+    assert result.chat.project == "Test project"
+
+
+def test_create_chat_without_project_uses_the_plain_entry_point(tmp_path: Path) -> None:
+    db = tmp_path / "bridge.db"
+    source = FakeSource()
+    send_service.create_chat("hello", db_path=db, session=session_for(source))
+    assert source.created == ["hello"]
+    assert source.created_in_project == []
+
+
+def test_create_chat_rejects_a_blank_project(tmp_path: Path) -> None:
+    db = tmp_path / "bridge.db"
+    with pytest.raises(send_service.SendError, match="project is empty"):
+        send_service.create_chat("hello", db_path=db, project="   ")
+
+
+def test_preview_is_scoped_to_the_project(tmp_path: Path) -> None:
+    db = tmp_path / "bridge.db"
+    seed(db)
+    conn = store.connect(db)
+    conn.execute("UPDATE chats SET project = 'Test project' WHERE id = ?", (UUID,))
+    conn.close()
+    assert send_service.preview("fedora", db_path=db, project="Test project") is not None
+    assert send_service.preview("fedora", db_path=db, project="Other") is None

@@ -312,3 +312,170 @@ def test_send_times_out_when_no_reply_appears(monkeypatch: pytest.MonkeyPatch) -
     adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
     with pytest.raises(chatgpt.ReplyTimeout):
         adapter.send_message(UUID, "hello")
+
+
+# ---------------------------------------------------------------- projects
+
+PROJECT_URL = "https://chatgpt.com/g/g-p-6ae70048e0988191babe7d3b4bd2619f/project"
+PROJECT_CHAT_FULL = "https://chatgpt.com/g/g-p-6ae70048e0988191babe7d3b4bd2619f/c/" + UUID
+PROJECT_CHAT_SLUGGED = (
+    "https://chatgpt.com/g/g-p-6ae70048e0988191babe7d3b4bd2619f-test-project/c/" + UUID
+)
+
+
+def test_project_chat_url_regex_accepts_both_forms() -> None:
+    plain = chatgpt.PROJECT_CHAT_URL_RE.match(PROJECT_CHAT_FULL)
+    slugged = chatgpt.PROJECT_CHAT_URL_RE.match(PROJECT_CHAT_SLUGGED)
+    assert plain is not None and slugged is not None
+    assert plain.group(1) == slugged.group(1) == "g-p-6ae70048e0988191babe7d3b4bd2619f"
+    assert plain.group(2) == slugged.group(2) == UUID
+
+
+def test_project_chat_url_regex_rejects_plain_chat() -> None:
+    assert chatgpt.PROJECT_CHAT_URL_RE.match(f"https://chatgpt.com/c/{UUID}") is None
+
+
+def test_chat_url_re_does_not_match_project_urls() -> None:
+    """Trap from milestone 1: create_chat_in_project must not wait on this."""
+    assert chatgpt.CHAT_URL_RE.match(PROJECT_CHAT_FULL) is None
+    assert chatgpt.CHAT_URL_RE.match(PROJECT_CHAT_SLUGGED) is None
+
+
+def test_parse_project_links_keeps_project_id() -> None:
+    refs = chatgpt._parse_project_links(
+        [{"href": PROJECT_CHAT_FULL, "title": "A chat"}, {"href": "/not/a/chat"}],
+        "Test project",
+    )
+    assert len(refs) == 1
+    assert refs[0].id == UUID
+    assert refs[0].title == "A chat"
+    assert refs[0].project == "Test project"
+    assert refs[0].project_id == "g-p-6ae70048e0988191babe7d3b4bd2619f"
+
+
+def test_parse_project_links_dedupes() -> None:
+    payload = [{"href": PROJECT_CHAT_FULL, "title": "A"}, {"href": PROJECT_CHAT_FULL, "title": "A"}]
+    refs = chatgpt._dedupe_refs(chatgpt._parse_project_links(payload, "P"))
+    assert len(refs) == 1
+
+
+class _ProjectPage:
+    """A page that reveals one chat when a project is expanded."""
+
+    def __init__(self) -> None:
+        self.url = "https://chatgpt.com/projects"
+        self.expanded = False
+        self.clicked: list[str] = []
+        self.typed = ""
+
+    def wait_for_selector(self, selector: str, timeout: int | None = None) -> None:
+        return None
+
+    def evaluate(self, script: str) -> object:
+        if script == chatgpt.EXTRACT_PROJECTS_JS:
+            return {
+                "projects": [
+                    {"name": "Test project", "hasChats": True},
+                    {"name": "Empty project", "hasChats": False},
+                ]
+            }
+        if script == chatgpt.PROJECT_LINKS_JS:
+            if not self.expanded:
+                return []
+            return [{"href": PROJECT_CHAT_FULL, "title": "Reply Exactly OK"}]
+        raise AssertionError(f"unexpected script: {script[:40]}")
+
+    def click(self, selector: str, timeout: int | None = None) -> None:
+        self.clicked.append(selector)
+        if "Toggle project" in selector:
+            self.expanded = True
+
+
+def test_list_projects_reads_names() -> None:
+    page = _ProjectPage()
+    adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
+    projects = adapter.list_projects()
+    assert [p.name for p in projects] == ["Test project", "Empty project"]
+    assert projects[1].has_chats is False
+
+
+def test_list_project_chats_returns_only_revealed_chats() -> None:
+    page = _ProjectPage()
+    adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
+    refs = adapter.list_project_chats("Test project")
+    assert [ref.id for ref in refs] == [UUID]
+    assert refs[0].project == "Test project"
+    assert any("Toggle project" in selector for selector in page.clicked)
+
+
+def test_list_project_chats_rejects_an_unknown_project() -> None:
+    class _NoClick(_ProjectPage):
+        def click(self, selector: str, timeout: int | None = None) -> None:
+            raise RuntimeError("no such element")
+
+    adapter = ChatGPTAdapter(_FakeBrowser(_NoClick()), page_delay_s=0)  # type: ignore[arg-type]
+    with pytest.raises(ChatNotFound, match="not on the projects page"):
+        adapter.list_project_chats("Nope")
+
+
+class _ProjectSendPage:
+    """Walks the real sequence: projects page -> project page -> project chat."""
+
+    def __init__(self) -> None:
+        self.url = chatgpt.PROJECTS_URL
+        self.typed = ""
+        self.typed_override: str | None = None
+        self.sent = False
+        self.clicks: list[str] = []
+        self.keyboard = _Keyboard(self)
+
+    def wait_for_selector(self, selector: str, timeout: int | None = None) -> None:
+        return None
+
+    def evaluate(self, script: str) -> object:
+        if script == chatgpt.COMPOSER_TEXT_JS:
+            return self.typed
+        if script == chatgpt.REPLY_STATE_JS:
+            if self.sent:
+                return {"assistant": 2, "lastLen": 5, "stop": False}
+            return {"assistant": 1, "lastLen": 4, "stop": False}
+        if script == chatgpt.EXTRACT_CHAT_JS:
+            return {
+                "title": "Project chat",
+                "url": PROJECT_CHAT_FULL,
+                "turns": [
+                    {"role": "user", "html": "<p>q</p>"},
+                    {"role": "assistant", "html": "<p>a</p>"},
+                ],
+            }
+        raise AssertionError(f"unexpected script: {script[:40]}")
+
+    def click(self, selector: str, timeout: int | None = None) -> None:
+        self.clicks.append(selector)
+        if "Start new chat in project" in selector:
+            self.url = PROJECT_URL
+        if selector == chatgpt.SEND_BUTTON:
+            self.sent = True
+            self.url = PROJECT_CHAT_FULL
+
+    def wait_for_url(self, predicate, timeout: int | None = None) -> None:
+        if not predicate(self.url):
+            raise RuntimeError(f"url did not match: {self.url}")
+
+
+def test_create_chat_in_project_walks_projects_to_chat() -> None:
+    page = _ProjectSendPage()
+    adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
+    chat = adapter.create_chat_in_project("Test project", "hello")
+    assert chat.id == UUID
+    assert chat.project_id == "g-p-6ae70048e0988191babe7d3b4bd2619f"
+    assert chat.turns[-1].text == "a"
+    assert any("Start new chat in project" in selector for selector in page.clicks)
+
+
+def test_create_chat_in_project_requires_a_message() -> None:
+    page = _ProjectSendPage()
+    adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
+    with pytest.raises(chatgpt.SendFailed, match="empty"):
+        adapter.create_chat_in_project("Test project", "  ")
+    assert page.clicks == []

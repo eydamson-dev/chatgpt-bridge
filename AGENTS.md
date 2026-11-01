@@ -31,6 +31,13 @@ not a disposable cache.
   switching.
 - **On demand only.** Do not add bulk sync, backfill, history walking, or
   background refresh. One named chat is fetched per request.
+- **Projects are read-only at the project level.** Reading projects and their
+  chats, and creating/sending inside a project, are supported. Creating,
+  renaming, deleting, or pinning a project, and changing its files or
+  instructions, are not.
+- **Never store or log a project name as if it were safe.** Project names and
+  IDs are personal data: they may be stored locally and shown to the user, but
+  they never go into logs.
 - **Never handle credentials.** Do not read, store, print, or log cookies,
   tokens, headers, or browser storage. Do not add code that reads a browser
   profile directory.

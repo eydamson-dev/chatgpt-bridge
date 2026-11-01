@@ -152,3 +152,42 @@ stored chat's messages already contain the words in its title.
 --dry-run`, `send` with prompt answered `n`, `send --yes`, and `new --yes` all
 behaved as documented. `send --yes` appended one exchange (2 → 4 messages) and
 `new --yes` created and stored a chat; `status` reported the new `last_send`.
+
+## 0.4.0 — ChatGPT Projects
+
+Verified 2026-11-01 against the live browser, using a throwaway data directory
+and the `chatgpt-bridge test` project.
+
+| Feature | Result | Evidence |
+|---|---|---|
+| `projects` | pass | listed `chatgpt-bridge test` and `cjc-flow` |
+| `chats --project NAME` | pass | listed that project's chats, with IDs |
+| `fetch --project NAME` | pass | outcome `new`, 2 messages, stored with the project |
+| `chats --stored --project` | pass | `[chatgpt-bridge test] Reply Exactly OK` |
+| `chats --stored --project` (wrong project) | pass | empty, no false positives |
+| `search --project NAME` | pass | hits scoped to the project |
+| `search --project NAME` (no hit) | pass | hint names the project and the fetch command |
+| `send --dry-run --project` | pass | label showed `project / title` |
+| `send --project --yes` | pass | outcome `sent`, 2 → 4 turns |
+| `new --project --yes` | pass | outcome `sent`, URL contains `/g/`, stored in project |
+| MCP `projects` | pass | both project names |
+| MCP `chats(project=…)` | pass | 2 stored chats, project recorded |
+| MCP `chats(stored=false, project=…)` | pass | live project listing, source `project` |
+| MCP `search_chats(project=…)` | pass | scoped hits |
+| MCP `get_chat` | pass | envelope includes `project` |
+| MCP `create_chat(project=…)` dry run | pass | returns the project |
+| Schema v3 → v4 migration | pass (unit) | columns added, backup written |
+| Gated live project test | pass | create + send inside the project |
+
+### Bugs found and fixed during the milestone
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `fetch --project` → "message 1 (assistant) is empty" | a project chat does not load at `/c/<id>` | open `/g/<project>/c/<chat>` |
+| `projects` listed one project instead of two | the list renders incrementally | poll until the count is stable |
+| `send` to a cached project chat would load the wrong URL | same `/c/<id>` cause | pass the resolved URL when `project_id` is set |
+
+### Test totals at 0.4.0
+
+- 287 offline tests, 4 read live tests, 2 gated send live tests.
+- `ruff` and `mypy --strict` clean; wheel contains all four migrations.

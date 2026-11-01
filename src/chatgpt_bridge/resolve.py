@@ -20,6 +20,7 @@ UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 ID_PREFIX_RE = re.compile(r"^[0-9a-fA-F]{6,}$")
+PROJECT_PATH_RE = re.compile(r"^/g/(g-p-[0-9a-f]+)(?:-[^/]*)?/c/")
 
 ListingProvider = Callable[[], list[ChatRef]]
 
@@ -43,6 +44,8 @@ class Resolved:
     url: str
     section: str | None = None
     from_cache: bool = False
+    project: str | None = None
+    project_id: str | None = None
 
 
 def target_id(target: str) -> str | None:
@@ -64,11 +67,29 @@ def target_id(target: str) -> str | None:
     return None
 
 
+def project_id_from_url(target: str) -> str | None:
+    """Extract the project ID from a /g/<project>/c/<chat> URL, else None."""
+    parsed = urlparse(target.strip())
+    if not parsed.scheme or parsed.hostname not in CHAT_HOSTS:
+        return None
+    match = PROJECT_PATH_RE.match(parsed.path)
+    return match.group(1) if match else None
+
+
 def direct_resolved(target: str) -> Resolved | None:
     """Build a target from a URL or a full chat ID, without needing a listing."""
     direct = target_id(target)
     if direct is None or not UUID_RE.match(direct):
         return None
+    url = target.strip()
+    if url.startswith("http"):
+        # Keep the project URL: it is where the chat actually lives.
+        return Resolved(
+            id=direct,
+            title=direct,
+            url=url,
+            project_id=project_id_from_url(url),
+        )
     return Resolved(id=direct, title=direct, url=f"https://chatgpt.com/c/{direct}")
 
 
@@ -176,11 +197,20 @@ def _resolved(summary: ChatSummary) -> Resolved:
         url=summary.url,
         section=summary.section,
         from_cache=True,
+        project=summary.project,
+        project_id=summary.project_id,
     )
 
 
 def _resolved_from_ref(ref: ChatRef) -> Resolved:
-    return Resolved(id=ref.id, title=ref.title, url=ref.url, section=ref.section)
+    return Resolved(
+        id=ref.id,
+        title=ref.title,
+        url=ref.url,
+        section=ref.section,
+        project=ref.project,
+        project_id=ref.project_id,
+    )
 
 
 __all__ = [
@@ -190,6 +220,7 @@ __all__ = [
     "Resolved",
     "TargetNotFound",
     "looks_like_id",
+    "project_id_from_url",
     "resolve_from_cache",
     "resolve_with_listing",
     "target_id",

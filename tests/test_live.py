@@ -76,3 +76,33 @@ def test_fetch_first_visible_chat(tmp_path: Path) -> None:
 
     again = fetch_chat(refs[0].id, db_path=tmp_path / "live.db", session=None)
     assert again.outcome == "cached"
+
+
+PROJECT_NAME = "chatgpt-bridge test"
+
+
+def test_lists_projects_read_only() -> None:
+    browser = Browser(CDP_URL)
+    browser.connect()
+    adapter = ChatGPTAdapter(browser, page_delay_s=0.4)
+    try:
+        projects = adapter.list_projects()
+    finally:
+        browser.close()
+    names = [project.name for project in projects]
+    assert names, "expected at least one ChatGPT project"
+    assert PROJECT_NAME in names
+
+
+def test_lists_project_chats_read_only() -> None:
+    browser = Browser(CDP_URL)
+    browser.connect()
+    adapter = ChatGPTAdapter(browser, page_delay_s=0.4)
+    try:
+        refs = adapter.list_project_chats(PROJECT_NAME)
+    finally:
+        browser.close()
+    for ref in refs:
+        assert ref.project == PROJECT_NAME
+        assert ref.project_id and ref.project_id.startswith("g-p-")
+        assert "/g/" in ref.url and "/c/" in ref.url

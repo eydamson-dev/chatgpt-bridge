@@ -5,7 +5,7 @@ not history. Update it at the end of every milestone: rewrite the "Current state
 and "Next step" sections, and append to "Decisions" and "Gotchas" only when
 something durable was learned.
 
-Last updated: 2026-11-01 (0.3.0 write path and live acceptance)
+Last updated: 2026-11-01 (0.4.0 ChatGPT Projects)
 
 ## What this project is
 
@@ -28,7 +28,7 @@ existing chat, or create one new chat with one message.
 
 ## Current state
 
-Version **0.3.1**. Working, verified against a live browser (Brave on
+Version **0.4.0**. Working, verified against a live browser (Brave on
 `127.0.0.1:9222`):
 
 - Target resolution by URL, full ID, ID prefix, exact title, unique title
@@ -44,15 +44,20 @@ Version **0.3.1**. Working, verified against a live browser (Brave on
   `search_chats` returns it as `hint`.
 - `forget` removes one chat; `reset` clears the whole local store (both prompt).
 - `doctor` checks config, database, CDP reachability, login, and sidebar lookup.
+- `projects` lists ChatGPT projects; `--project NAME` scopes `chats`, `fetch`,
+  `search`, `send`, and `new`. A chat fetched from a project stores its name and
+  `g-p-…` ID (schema v4), so `chats --stored --project` and `search --project`
+  work offline.
 - `send` appends one confirmed message to an existing chat; `new` creates a chat
   with one message. Both wait for the reply and refresh the local copy.
   `--dry-run` resolves without a page or a send; `--yes` skips the prompt.
-- MCP server exposes nine tools: `status`, `chats`, `fetch_chat`, `get_chat`,
-  `search_chats`, `forget_chat`, `doctor`, `send_message`, `create_chat`.
+- MCP server exposes ten tools: `status`, `chats`, `fetch_chat`, `get_chat`,
+  `search_chats`, `forget_chat`, `doctor`, `send_message`, `create_chat`,
+  `projects`. Five of them accept a `project` argument.
   `send_message` is a dry run unless `confirm=true` and `expected_chat_id`
   matches; `create_chat` requires `confirm=true`. Chat text is wrapped as
   untrusted content.
-- 240 unit tests, 2 opt-in read live tests, and 1 gated live send test pass;
+- 287 unit tests, 4 opt-in read live tests, and 2 gated live send tests pass;
   `ruff` and `mypy --strict` are clean on Python 3.12 and 3.14.
 - The built wheel includes all three migrations, installs into a clean virtual
   environment, and both entry points work. `.github/workflows/ci.yml` repeats
@@ -64,9 +69,10 @@ Version **0.3.1**. Working, verified against a live browser (Brave on
   never message text.
 - Full feature evidence: `docs/ACCEPTANCE.md`.
 
-Schema is **version 3**. Migration `002_on_demand.sql` rebuilds the tables and
-discards v1 backfill data; `003_send_log.sql` adds metadata for the write path.
-v1 and v2 databases migrate automatically.
+Schema is **version 4**. Migration `002_on_demand.sql` rebuilds the tables and
+discards v1 backfill data; `003_send_log.sql` adds metadata for the write path; `004_project.sql` adds
+`project`/`project_id` to `chats`. v1, v2, and v3 databases migrate
+automatically.
 
 ## Repo map
 
@@ -282,8 +288,19 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
   `/g/g-p-<id>/c/<chat-id>`; after a send the address bar shows the slugged
   `/g/g-p-<id>-<project-slug>/c/<chat-id>`. `chat_id_from_url()` handles both,
   `CHAT_URL_RE` handles neither.
-- **`/projects` may only list chats for expanded projects.** Unverified; expand
-  the project named in the request before reading its chat list.
+- **`/projects` only lists chats for expanded projects.** Expand the project
+  named in the request and diff the link set before and after, which also
+  excludes links belonging to other projects.
+- **A project chat does not open at `/c/<id>`.** The page loads with no
+  conversation, so parsing fails with "message 1 (assistant) is empty". Use
+  `/g/<project-id>/c/<chat-id>`. `fetch` and `send` pass the resolved URL when
+  the chat has a `project_id`.
+- **The projects list renders incrementally.** Reading as soon as the first
+  `div[data-project-row]` appears drops the remaining projects; poll until the
+  count is stable twice.
+- **A project chat's address-bar URL is slugged** (`/g/g-p-<id>-<slug>/c/<chat>`)
+  while the DOM link is `/g/g-p-<id>/c/<chat>`. Both parse; only
+  `PROJECT_CHAT_URL_RE` accepts them.
 
 ## Known limitations
 
@@ -302,16 +319,15 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
 
 ## Next step
 
-**ChatGPT Projects (0.4.0) is planned and milestone 1 is done.**
-`docs/PROJECTS-PLAN.md` is the authority; read it before touching the adapter,
-resolution, or the schema. Milestone 1 verified the live UI and resolved the
-project-ID question on 2026-11-01. Next is milestone 2, the read path
-(`list_projects`, `list_project_chats`, CLI `projects`, MCP `projects`), which
-needs no schema change.
+Nothing is in flight. Milestones 1–15 in `PLAN.md` §16 are done; 0.4.0 is
+verified; all unit tests, 4 read live tests, and 2 gated send live tests pass.
+`docs/ACCEPTANCE.md` records the 0.3.0 feature run and the 0.3.1/0.4.0
+additions. `docs/PROJECTS-PLAN.md` remains the design record for projects —
+read it before changing project resolution or the adapter.
 
-Otherwise nothing is in flight. Milestones 1–14 in `PLAN.md` §16 are done;
-0.3.1 is verified; all unit tests, 2 read live tests, and 1 gated send live test
-pass. `docs/ACCEPTANCE.md` records the full feature run.
+Deliberately not built: `fetch a b c` for several targets, edit/delete/rename
+and branch switching, project-level writes (create/rename/delete/pin, files,
+instructions), and PyPI publication.
 
 The user verified the CLI by hand on 2026-11-01: `doctor`, `chats`, `chats
 --stored`, `fetch`, `show`, `search`, dry run, prompt cancel, `send --yes`, and

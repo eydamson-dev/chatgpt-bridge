@@ -177,3 +177,48 @@ def test_reset_clears_cache(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHATGPT_BRIDGE_DATA_DIR", str(db.parent))
     maintenance.reset()
     assert query.counts(db_path=db).chats == 0
+
+
+# ---------------------------------------------------------------- projects
+
+
+def _project_chat(db: Path, chat_id: str, title: str, project: str, text: str) -> None:
+    conn = store.connect(db)
+    turns = [store.Turn(role="user", markdown=text, text=text)]
+    store.save_chat(
+        conn,
+        chat_id=chat_id,
+        title=title,
+        url=f"https://chatgpt.com/g/g-p-abc/c/{chat_id}",
+        turns=turns,
+        hash_value=store.content_hash(turns),
+        project=project,
+        project_id="g-p-abc",
+    )
+    conn.close()
+
+
+def test_list_cached_filters_by_project(db: Path) -> None:
+    _project_chat(db, UUID, "Project plan", "Test project", "kubernetes")
+    assert [s.id for s in query.list_cached(db_path=db, project="Test project")] == [UUID]
+    assert query.list_cached(db_path=db, project="Nothing") == []
+
+
+def test_search_filters_by_project(db: Path) -> None:
+    _project_chat(db, UUID, "Project plan", "Test project", "kubernetes")
+    assert query.search("kubernetes", db_path=db, project="Test project")
+    assert query.search("kubernetes", db_path=db, project="Other") == []
+
+
+def test_search_hint_in_project_scope_names_the_project(db: Path) -> None:
+    _project_chat(db, UUID, "Project plan", "Test project", "kubernetes")
+    hint = query.search_hint("zzzzzz", db_path=db, project="Test project")
+    assert "in project 'Test project'" in hint
+    assert "--project 'Test project'" in hint
+
+
+def test_search_hint_names_the_project_of_a_matching_title(db: Path) -> None:
+    _project_chat(db, UUID, "Project plan", "Test project", "kubernetes")
+    hint = query.search_hint("Project plan", db_path=db)
+    assert "in project 'Test project'" in hint
+    assert "chatgpt-bridge show" in hint

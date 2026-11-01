@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from chatgpt_bridge import paths
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_PARSE_VERSION = 1
 Role = Literal["user", "assistant"]
 FetchStatus = Literal["ok", "unchanged", "failed"]
@@ -33,13 +33,15 @@ class AmbiguousChatId(LookupError):
 
 @dataclass(frozen=True)
 class ChatRef:
-    """A chat as it appears in the sidebar listing."""
+    """A chat as it appears in a listing (sidebar or project page)."""
 
     id: str
     title: str
     url: str
     section: str | None = None
     rank: int | None = None
+    project: str | None = None
+    project_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,8 @@ class StoredChat:
     fetched_at: str
     parse_version: int
     turns: tuple[Turn, ...]
+    project: str | None = None
+    project_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +84,8 @@ class ChatSummary:
     turn_count: int | None
     fetched_at: str
     parse_version: int
+    project: str | None = None
+    project_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -247,6 +253,8 @@ def save_chat(
     section: str | None = None,
     parse_version: int = DEFAULT_PARSE_VERSION,
     fetched_at: str | None = None,
+    project: str | None = None,
+    project_id: str | None = None,
 ) -> None:
     """Store a fetched chat, replacing any previous copy, in one transaction."""
     fetched = fetched_at or utc_now()
@@ -254,8 +262,8 @@ def save_chat(
         conn.execute(
             """
             INSERT INTO chats(id, title, url, section, content_hash, turn_count,
-                              fetched_at, parse_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                              fetched_at, parse_version, project, project_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               title = excluded.title,
               url = excluded.url,
@@ -263,9 +271,22 @@ def save_chat(
               content_hash = excluded.content_hash,
               turn_count = excluded.turn_count,
               fetched_at = excluded.fetched_at,
-              parse_version = excluded.parse_version
+              parse_version = excluded.parse_version,
+              project = COALESCE(excluded.project, chats.project),
+              project_id = COALESCE(excluded.project_id, chats.project_id)
             """,
-            (chat_id, title, url, section, hash_value, len(turns), fetched, parse_version),
+            (
+                chat_id,
+                title,
+                url,
+                section,
+                hash_value,
+                len(turns),
+                fetched,
+                parse_version,
+                project,
+                project_id,
+            ),
         )
         conn.execute("DELETE FROM turns WHERE chat_id = ?", (chat_id,))
         for position, turn in enumerate(turns):
@@ -346,9 +367,17 @@ def last_send(conn: sqlite3.Connection) -> SendLogEntry | None:
 # ---------------------------------------------------------------- reads
 
 
-def chat_summaries(conn: sqlite3.Connection, limit: int | None = None) -> list[ChatSummary]:
-    sql = "SELECT * FROM chats ORDER BY fetched_at DESC, title COLLATE NOCASE"
+def chat_summaries(
+    conn: sqlite3.Connection,
+    limit: int | None = None,
+    project_id: str | None = None,
+) -> list[ChatSummary]:
+    sql = "SELECT * FROM chats"
     params: list[Any] = []
+    if project_id is not None:
+        sql += " WHERE project_id = ?"
+        params.append(project_id)
+    sql += " ORDER BY fetched_at DESC, title COLLATE NOCASE"
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
@@ -361,9 +390,37 @@ def chat_summaries(conn: sqlite3.Connection, limit: int | None = None) -> list[C
             turn_count=row["turn_count"],
             fetched_at=str(row["fetched_at"]),
             parse_version=int(row["parse_version"]),
+            project=row["project"],
+            project_id=row["project_id"],
         )
         for row in conn.execute(sql, params).fetchall()
     ]
+
+
+def chat_summaries_in_project(
+    conn: sqlite3.Connection, project: str, limit: int | None = None
+) -> list[ChatSummary]:
+    """Stored chats belonging to a project, matched by name."""
+    rows = conn.execute(
+        "SELECT * FROM chats WHERE project = ? COLLATE NOCASE "
+        "ORDER BY fetched_at DESC, title COLLATE NOCASE",
+        (project,),
+    ).fetchall()
+    summaries = [
+        ChatSummary(
+            id=str(row["id"]),
+            title=str(row["title"]),
+            url=str(row["url"]),
+            section=row["section"],
+            turn_count=row["turn_count"],
+            fetched_at=str(row["fetched_at"]),
+            parse_version=int(row["parse_version"]),
+            project=row["project"],
+            project_id=row["project_id"],
+        )
+        for row in rows
+    ]
+    return summaries[:limit] if limit is not None else summaries
 
 
 def chat_exists(conn: sqlite3.Connection, chat_id: str) -> bool:
@@ -404,6 +461,8 @@ def find_by_title(conn: sqlite3.Connection, title: str) -> list[ChatSummary]:
             turn_count=row["turn_count"],
             fetched_at=str(row["fetched_at"]),
             parse_version=int(row["parse_version"]),
+            project=row["project"],
+            project_id=row["project_id"],
         )
         for row in rows
     ]
@@ -423,6 +482,8 @@ def get_chat(conn: sqlite3.Connection, chat_id: str) -> StoredChat | None:
         fetched_at=str(row["fetched_at"]),
         parse_version=int(row["parse_version"]),
         turns=_load_turns(conn, chat_id),
+        project=row["project"],
+        project_id=row["project_id"],
     )
 
 
@@ -458,6 +519,7 @@ def search(
     query: str,
     chat_id: str | None = None,
     limit: int = 20,
+    project: str | None = None,
 ) -> list[SearchHit]:
     """Full-text search. Terms shorter than 3 chars cannot be trigram-indexed, so
     those queries fall back to a LIKE scan."""
@@ -471,6 +533,9 @@ def search(
     if chat_id:
         filters.append("t.chat_id = ?")
         params.append(chat_id)
+    if project:
+        filters.append("lower(c.project) = lower(?)")
+        params.append(project)
     where = (" AND " + " AND ".join(filters)) if filters else ""
 
     if all(len(term) >= 3 for term in terms):

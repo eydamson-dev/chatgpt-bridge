@@ -38,9 +38,13 @@ class SendRefused(SendError):
 class SendSource(Protocol):
     def list_chats(self, scroll: bool = False, limit: int | None = None) -> list[ChatRef]: ...
 
+    def list_project_chats(self, project: str, limit: int = 50) -> list[ChatRef]: ...
+
     def send_message(self, chat_id: str, message: str) -> ExtractedChat: ...
 
     def create_chat(self, message: str) -> ExtractedChat: ...
+
+    def create_chat_in_project(self, project: str, message: str) -> ExtractedChat: ...
 
 
 SessionFactory = Callable[[], AbstractContextManager[SendSource]]
@@ -55,14 +59,21 @@ class SendResult:
     reply: str | None = None
 
 
-def preview(target: str, *, db_path: Path | None = None) -> Resolved | None:
+def preview(
+    target: str, *, db_path: Path | None = None, project: str | None = None
+) -> Resolved | None:
     """Resolve a target without opening a page. Used by dry runs and prompts."""
     direct = direct_resolved(target)
     if direct is not None:
         return direct
     conn = store.connect(db_path)
     try:
-        return resolve_from_cache(target, store.chat_summaries(conn))
+        summaries = (
+            store.chat_summaries_in_project(conn, project)
+            if project
+            else store.chat_summaries(conn)
+        )
+        return resolve_from_cache(target, summaries)
     finally:
         conn.close()
 
@@ -75,6 +86,7 @@ def send_message(
     db_path: Path | None = None,
     session: SessionFactory | None = None,
     lookup_limit: int = 50,
+    project: str | None = None,
 ) -> SendResult:
     """Send one message to one existing chat, then refresh the stored copy."""
     if not target.strip():
@@ -82,14 +94,14 @@ def send_message(
     _validate(message)
     conn = store.connect(db_path)
     try:
-        cached = _cached_match(conn, target)
+        cached = _cached_match(conn, target, project=project)
         if cached is not None:
             if session is None:
                 raise TargetNotFound(
                     f"chat {target!r} is stored but sending requires a browser session"
                 )
             with session() as source:
-                return _send_with_source(conn, source, cached, message, expected_chat_id)
+                return _send_with_source(conn, source, cached, message, expected_chat_id, project)
 
         if session is None:
             raise TargetNotFound(
@@ -98,10 +110,13 @@ def send_message(
         with session() as source:
             resolved = direct_resolved(target)
             if resolved is None:
-                resolved = resolve_with_listing(
-                    target, source.list_chats(scroll=False, limit=lookup_limit)
+                refs = (
+                    source.list_project_chats(project, limit=lookup_limit)
+                    if project
+                    else source.list_chats(scroll=False, limit=lookup_limit)
                 )
-            return _send_with_source(conn, source, resolved, message, expected_chat_id)
+                resolved = resolve_with_listing(target, refs)
+            return _send_with_source(conn, source, resolved, message, expected_chat_id, project)
     finally:
         conn.close()
 
@@ -111,21 +126,28 @@ def create_chat(
     *,
     db_path: Path | None = None,
     session: SessionFactory | None = None,
+    project: str | None = None,
 ) -> SendResult:
     """Create a new chat with one message, then store the conversation."""
     _validate(message)
+    if project is not None and not project.strip():
+        raise SendError("project is empty")
     if session is None:
         raise SendError("creating a chat requires a browser session")
     conn = store.connect(db_path)
     try:
         with session() as source:
             try:
-                extracted = source.create_chat(message)
+                extracted = (
+                    source.create_chat_in_project(project, message)
+                    if project
+                    else source.create_chat(message)
+                )
             except ReplyTimeout as exc:
                 if exc.chat_id:
                     store.record_send(conn, exc.chat_id, "unknown", "ReplyTimeout")
                 return SendResult(outcome="unknown", chat_id=exc.chat_id, url=exc.url)
-        return _save_and_result(conn, extracted, section=None)
+        return _save_and_result(conn, extracted, section=None, project=project)
     finally:
         conn.close()
 
@@ -136,13 +158,16 @@ def _send_with_source(
     resolved: Resolved,
     message: str,
     expected_chat_id: str | None,
+    project: str | None = None,
 ) -> SendResult:
     if expected_chat_id is not None and resolved.id != expected_chat_id:
         raise SendRefused(
             f"refusing to send: expected chat {expected_chat_id}, resolved {resolved.id}"
         )
     try:
-        extracted = source.send_message(resolved.id, message)
+        # A project chat only loads on its /g/<project>/c/<chat> URL.
+        target = resolved.url if resolved.project_id else resolved.id
+        extracted = source.send_message(target, message)
     except ReplyTimeout as exc:
         store.record_send(conn, exc.chat_id or resolved.id, "unknown", "ReplyTimeout")  # type: ignore[arg-type]
         return SendResult(
@@ -150,7 +175,13 @@ def _send_with_source(
             chat_id=exc.chat_id or resolved.id,
             url=exc.url or resolved.url,
         )
-    return _save_and_result(conn, extracted, section=resolved.section)
+    return _save_and_result(
+        conn,
+        extracted,
+        section=resolved.section,
+        project=project or resolved.project,
+        project_id=resolved.project_id,
+    )
 
 
 def _save_and_result(
@@ -158,6 +189,8 @@ def _save_and_result(
     extracted: ExtractedChat,
     *,
     section: str | None,
+    project: str | None = None,
+    project_id: str | None = None,
 ) -> SendResult:
     turns = [
         Turn(
@@ -176,6 +209,8 @@ def _save_and_result(
         section=section,
         turns=turns,
         hash_value=store.content_hash(turns),
+        project=project,
+        project_id=project_id or extracted.project_id,
     )
     store.record_fetch(conn, extracted.id, "ok")  # type: ignore[arg-type]
     store.record_send(conn, extracted.id, "sent")  # type: ignore[arg-type]
@@ -198,8 +233,12 @@ def _last_assistant(chat: store.StoredChat) -> str | None:
     return None
 
 
-def _cached_match(conn: object, target: str) -> Resolved | None:
-    summaries = store.chat_summaries(conn)  # type: ignore[arg-type]
+def _cached_match(conn: object, target: str, project: str | None = None) -> Resolved | None:
+    summaries = (
+        store.chat_summaries_in_project(conn, project)  # type: ignore[arg-type]
+        if project
+        else store.chat_summaries(conn)  # type: ignore[arg-type]
+    )
     return resolve_from_cache(target, summaries)
 
 

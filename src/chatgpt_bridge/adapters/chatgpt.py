@@ -46,6 +46,25 @@ CHAT_URL_RE = re.compile(
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:$|[?#])"
 )
 
+# --- projects --------------------------------------------------------
+PROJECTS_URL = f"{BASE_URL}/projects"
+PROJECT_ROW = "div[data-project-row]"
+PROJECT_TOGGLE = 'button[aria-label="Toggle project"]'
+PROJECT_NEW_CHAT = 'button[aria-label="Start new chat in project"]'
+PROJECT_CHAT_LIMIT = 50
+PROJECT_LINK_TIMEOUT_MS = 8_000
+PROJECT_SETTLE_TIMEOUT_S = 10.0
+PROJECT_ID_RE = re.compile(r"^(g-p-[0-9a-f]+)$")
+# Both the plain DOM form and the slugged address-bar form.
+PROJECT_CHAT_URL_RE = re.compile(
+    r"^https?://(?:www\.)?chatgpt\.com/g/(g-p-[0-9a-f]+)(?:-[^/]*)?/c/"
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:$|[?#])"
+)
+PROJECT_URL_RE = re.compile(
+    r"^https?://(?:www\.)?chatgpt\.com/g/(g-p-[0-9a-f]+)(?:-[^/]*)?/project"
+)
+
 # --- in-page scripts -------------------------------------------------
 EXTRACT_SIDEBAR_JS = """
 () => {
@@ -145,6 +164,40 @@ LOAD_EARLIER_JS = """
 """
 
 
+EXTRACT_PROJECTS_JS = """
+() => {
+  const rows = Array.from(document.querySelectorAll('[data-project-row]'));
+  const projects = [];
+  const seen = new Set();
+  for (const row of rows) {
+    const text = (row.innerText || '').trim();
+    if (!text) continue;
+    const name = text.split('\\n')[0].trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    projects.push({ name, hasChats: !/(^|\\n)No chats(\\n|$)/.test(text) });
+  }
+  return { projects };
+}
+"""
+
+PROJECT_LINKS_JS = """
+() => {
+  const out = [];
+  const seen = new Set();
+  for (const a of document.querySelectorAll('a[href*="/g/"]')) {
+    const href = a.getAttribute('href') || '';
+    if (!/\\/c\\//.test(href)) continue;
+    const key = href;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ href: href.startsWith('/') ? ('https://chatgpt.com' + href) : href,
+               title: (a.innerText || '').trim() });
+  }
+  return out;
+}
+"""
+
 COMPOSER_TEXT_JS = """
 () => {
   const composer = document.querySelector('div[contenteditable="true"][role="textbox"]');
@@ -217,6 +270,16 @@ class ExtractedChat:
     title: str
     url: str
     turns: tuple[ParsedTurn, ...] = field(default_factory=tuple)
+    project_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ProjectRef:
+    """A ChatGPT project as listed on /projects."""
+
+    name: str
+    project_id: str | None = None
+    has_chats: bool = True
 
 
 CHAT_HOSTS = {"chatgpt.com", "www.chatgpt.com", "chat.openai.com"}
@@ -262,6 +325,113 @@ class ChatGPTAdapter:
         refs = _parse_sidebar(payload)
         return refs[:limit] if limit is not None else refs
 
+    # -- projects ---------------------------------------------------
+    def list_projects(self) -> list[ProjectRef]:
+        """Read the project names listed on /projects. Never scrolls."""
+        with self.browser.open_tab(PROJECTS_URL) as page:
+            page.wait_for_selector(PROJECT_ROW, timeout=LOAD_TIMEOUT_MS)
+            payload = self._settled_projects(page)
+        projects = []
+        for entry in payload.get("projects", []):
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            projects.append(ProjectRef(name=name, has_chats=bool(entry.get("hasChats", True))))
+        return projects
+
+    def list_project_chats(self, project: str, limit: int = PROJECT_CHAT_LIMIT) -> list[ChatRef]:
+        """Expand one project and return the chats it reveals.
+
+        The DOM does not tie a project name to its ID, so the new links are
+        obtained by diffing before and after the expand click. Collapsed
+        projects expose no chat links, which is what makes the diff reliable.
+        """
+        wanted = project.strip()
+        if not wanted:
+            raise ChatNotFound("project name is empty")
+        with self.browser.open_tab(PROJECTS_URL) as page:
+            page.wait_for_selector(PROJECT_ROW, timeout=LOAD_TIMEOUT_MS)
+            before = {
+                ref.id for ref in _parse_project_links(page.evaluate(PROJECT_LINKS_JS), wanted)
+            }
+            self._expand_project(page, wanted)
+            refs = _dedupe_refs(_parse_project_links(page.evaluate(PROJECT_LINKS_JS), wanted))
+        revealed = [ref for ref in refs if ref.id not in before]
+        return revealed[:limit] if revealed else refs[:limit]
+
+    def _settled_projects(self, page: Any) -> dict[str, Any]:
+        """Read the project list once it stops growing.
+
+        The rows render incrementally, so reading as soon as the first one
+        appears can silently drop the rest.
+        """
+        previous = -1
+        stable = 0
+        payload: dict[str, Any] = {}
+        deadline = time.monotonic() + PROJECT_SETTLE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            payload = page.evaluate(EXTRACT_PROJECTS_JS) or {}
+            count = len(payload.get("projects", []))
+            if count == previous and count > 0:
+                stable += 1
+                if stable >= 2:
+                    return payload
+            else:
+                stable = 0
+            previous = count
+            time.sleep(max(self.page_delay_s, 0.2))
+        return payload
+
+    def _expand_project(self, page: Any, name: str) -> None:
+        selector = f"{PROJECT_ROW}:has-text({json.dumps(name)}) {PROJECT_TOGGLE}"
+        try:
+            page.click(selector, timeout=PROJECT_LINK_TIMEOUT_MS)
+        except Exception as exc:
+            raise ChatNotFound(f"project {name!r} is not on the projects page") from exc
+        deadline = time.monotonic() + PROJECT_LINK_TIMEOUT_MS / 1000
+        while time.monotonic() < deadline:
+            time.sleep(max(self.page_delay_s, 0.2))
+            if page.evaluate(PROJECT_LINKS_JS):
+                return
+
+    def create_chat_in_project(self, project: str, message: str) -> ExtractedChat:
+        """Create one chat inside a project and return it."""
+        if not message.strip():
+            raise SendFailed("message is empty")
+        name = project.strip()
+        if not name:
+            raise SendFailed("project name is empty")
+        with self.browser.open_tab(PROJECTS_URL) as page:
+            page.wait_for_selector(PROJECT_ROW, timeout=LOAD_TIMEOUT_MS)
+            selector = f"{PROJECT_ROW}:has-text({json.dumps(name)}) {PROJECT_NEW_CHAT}"
+            try:
+                page.click(selector, timeout=PROJECT_LINK_TIMEOUT_MS)
+            except Exception as exc:
+                raise SendFailed(f"project {name!r} is not on the projects page") from exc
+            try:
+                page.wait_for_url(
+                    lambda url: PROJECT_URL_RE.match(url) is not None,
+                    timeout=LOAD_TIMEOUT_MS,
+                )
+            except Exception as exc:
+                raise SendFailed("the project chat page did not open; nothing was sent") from exc
+            project_id = _project_id_from_url(page.url)
+            self._open_composer(page)
+            before = self._reply_state(page)
+            self._type_message(page, message)
+            self._click_send(page)
+            try:
+                page.wait_for_url(
+                    lambda url: PROJECT_CHAT_URL_RE.match(url) is not None,
+                    timeout=LOAD_TIMEOUT_MS,
+                )
+            except Exception as exc:
+                raise ReplyTimeout("", page.url) from exc
+            chat_id = _chat_id_from_project_url(page.url)
+            self._wait_for_reply(page, chat_id, before)
+            payload = page.evaluate(EXTRACT_CHAT_JS)
+        return _parse_chat(chat_id, payload, project_id=project_id)
+
     def _scroll_sidebar(self, page: Any) -> None:
         stable = 0
         previous = -1
@@ -280,7 +450,11 @@ class ChatGPTAdapter:
     # -- content ----------------------------------------------------
     def fetch_chat(self, url_or_id: str) -> ExtractedChat:
         chat_id = chat_id_from_url(url_or_id)
-        with self.browser.open_tab(chat_url(chat_id)) as page:
+        # A full URL is opened as given, so a project chat keeps its project.
+        target = url_or_id.strip()
+        with self.browser.open_tab(
+            target if target.startswith("http") else chat_url(chat_id)
+        ) as page:
             try:
                 page.wait_for_selector(ROLE_HEADING, timeout=LOAD_TIMEOUT_MS)
             except Exception as exc:
@@ -314,13 +488,20 @@ class ChatGPTAdapter:
             payload = page.evaluate(EXTRACT_CHAT_JS)
         return _parse_chat(chat_id, payload)
 
-    def send_message(self, chat_id: str, message: str) -> ExtractedChat:
-        """Append one message to an existing chat and return the refreshed chat."""
+    def send_message(self, url_or_id: str, message: str) -> ExtractedChat:
+        """Append one message to an existing chat and return the refreshed chat.
+
+        A project chat must be opened by its /g/<project>/c/<chat> URL: the plain
+        /c/<id> route does not load conversations that live in a project.
+        """
         if not message.strip():
             raise SendFailed("message is empty")
-        with self.browser.open_tab(chat_url(chat_id)) as page:
+        chat_id = chat_id_from_url(url_or_id)
+        target = url_or_id.strip()
+        page_url = target if target.startswith("http") else chat_url(chat_id)
+        with self.browser.open_tab(page_url) as page:
             self._open_composer(page)
-            loaded = chat_id_from_url(page.url) if "/c/" in page.url else ""
+            loaded = chat_id_from_url(page.url) if CHAT_PATH_PREFIX in page.url else ""
             if loaded != chat_id:
                 raise SendFailed(
                     f"loaded chat {loaded or 'unknown'} instead of {chat_id}; nothing was sent"
@@ -330,7 +511,7 @@ class ChatGPTAdapter:
             self._click_send(page)
             self._wait_for_reply(page, chat_id, before)
             payload = page.evaluate(EXTRACT_CHAT_JS)
-        return _parse_chat(chat_id, payload)
+        return _parse_chat(chat_id, payload, project_id=_project_id_from_url(page_url))
 
     def _open_composer(self, page: Any) -> None:
         try:
@@ -447,7 +628,55 @@ def _parse_sidebar(payload: dict[str, Any]) -> list[ChatRef]:
     return refs
 
 
-def _parse_chat(chat_id: str, payload: dict[str, Any]) -> ExtractedChat:
+def _project_id_from_url(url: str) -> str | None:
+    match = PROJECT_URL_RE.match(url) or PROJECT_CHAT_URL_RE.match(url)
+    return match.group(1) if match else None
+
+
+def _chat_id_from_project_url(url: str) -> str:
+    match = PROJECT_CHAT_URL_RE.match(url)
+    if match is None:
+        raise ValueError(f"not a ChatGPT project chat URL: {url!r}")
+    return match.group(2)
+
+
+def _parse_project_links(payload: Any, project: str | None = None) -> list[ChatRef]:
+    """Turn /g/<project>/c/<chat> anchors into ChatRefs, keeping the project ID."""
+    refs: list[ChatRef] = []
+    if not isinstance(payload, list):
+        return refs
+    for item in payload:
+        href = str(item.get("href") or "")
+        match = PROJECT_CHAT_URL_RE.match(href)
+        if match is None:
+            continue
+        refs.append(
+            ChatRef(
+                id=match.group(2),
+                title=str(item.get("title") or match.group(2)),
+                url=href,
+                section="projects",
+                project=project,
+                project_id=match.group(1),
+            )
+        )
+    return refs
+
+
+def _dedupe_refs(refs: list[ChatRef]) -> list[ChatRef]:
+    seen: set[str] = set()
+    unique: list[ChatRef] = []
+    for ref in refs:
+        if ref.id in seen:
+            continue
+        seen.add(ref.id)
+        unique.append(ref)
+    return unique
+
+
+def _parse_chat(
+    chat_id: str, payload: dict[str, Any], project_id: str | None = None
+) -> ExtractedChat:
     raw: list[RawTurn] = []
     for item in payload.get("turns", []):
         role = item.get("role")
@@ -467,6 +696,7 @@ def _parse_chat(chat_id: str, payload: dict[str, Any]) -> ExtractedChat:
         title=title,
         url=str(payload.get("url") or chat_url(chat_id)),
         turns=tuple(turns),
+        project_id=project_id,
     )
 
 

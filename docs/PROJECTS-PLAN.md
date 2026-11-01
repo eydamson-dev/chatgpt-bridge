@@ -1,7 +1,7 @@
 # ChatGPT Projects — implementation plan
 
-**Status:** milestone 1 complete (UI verified); implementation not started.
-Target version **0.4.0**.
+**Status:** **implemented in 0.4.0** (2026-11-01). Milestones 1–7 complete.
+This document records the design and the verification that shaped it.
 **Approved:** 2026-11-01 by the user.
 
 Adds awareness of ChatGPT Projects: list them, list their chats, search them by
@@ -252,16 +252,18 @@ section.
    chat URL, and anchor shape all confirmed (§2, §11). Two follow-ups carried
    into milestone 2: confirm whether collapsed projects list their chats, and
    add `PROJECT_CHAT_URL_RE` before the first project send.
-2. **Read path.** `list_projects`, `list_project_chats`, CLI `projects`, MCP
-   `projects`. No schema change yet.
-3. **Schema v4 + storage.** Migration, `project` on save/summaries/search,
-   `--project` filters on `chats`/`search`.
-4. **Fetch.** `--project` on `fetch`; membership recorded from URL or flag.
-5. **Search titles.** Project-title matching in resolution and `search_hint`.
-6. **Write path.** `new --project`, `send --project`, MCP equivalents, gated live
-   test.
-7. **Docs.** `README.md`, `CHANGELOG.md` 0.4.0, `PLAN.md`, `docs/HANDOFF.md`,
-   `docs/ACCEPTANCE.md`, Obsidian note.
+2. ~~**Read path.**~~ ✅ `list_projects`, `list_project_chats`, CLI `projects`,
+   MCP `projects`.
+3. ~~**Schema v4 + storage.**~~ ✅ Migration `004_project.sql`,
+   `project`/`project_id` on save/summaries/search, `--project` filters.
+4. ~~**Fetch.**~~ ✅ `--project` on `fetch`; membership recorded from the URL or
+   the flag, and preserved on a later plain re-fetch.
+5. ~~**Search titles.**~~ ✅ Project-scoped resolution and a project-aware
+   `search_hint`.
+6. ~~**Write path.**~~ ✅ `new --project`, `send --project`, MCP equivalents,
+   gated live test.
+7. ~~**Docs.**~~ ✅ `README.md`, `CHANGELOG.md` 0.4.0, `PLAN.md`,
+   `docs/HANDOFF.md`, `docs/ACCEPTANCE.md`, Obsidian note.
 
 Each milestone leaves the suite green and the tree committed.
 
@@ -304,9 +306,15 @@ Consequences for the design:
   row is only needed if the page hides chats for collapsed projects. Milestone 2
   must confirm which is true and prefer the cheaper path.
 
-Still unverified: whether `/projects` lists chats for **collapsed** projects or
-only expanded ones. Milestone 2 settles it; the fallback is to expand each
-project the request names.
+**Answered in milestone 2:** `/projects` only lists chats for expanded
+projects, so `list_project_chats` expands the requested project and diffs the
+link set before and after, which also excludes chat links from other projects.
+
+**Found during implementation, not predicted by the design:** a project chat
+does **not** open at `/c/<chat-id>`; the page loads without a conversation. It
+must be opened at `/g/<project-id>/c/<chat-id>`. `fetch` and `send` now pass the
+resolved URL when the chat belongs to a project. This was the single largest
+bug in the milestone.
 
 ### Note
 

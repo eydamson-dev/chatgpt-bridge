@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from chatgpt_bridge import store
-from chatgpt_bridge.adapters.chatgpt import ExtractedChat
+from chatgpt_bridge.adapters.chatgpt import ExtractedChat, chat_id_from_url
 from chatgpt_bridge.fetch import fetch_chat
 from chatgpt_bridge.parse import ParsedTurn
 from chatgpt_bridge.resolve import AmbiguousTarget, TargetNotFound
@@ -40,7 +40,7 @@ class FakeSource:
 
     def fetch_chat(self, url_or_id: str) -> ExtractedChat:
         self.fetched.append(url_or_id)
-        return extracted(url_or_id, self.body)
+        return extracted(chat_id_from_url(url_or_id), self.body)
 
 
 @pytest.fixture
@@ -163,3 +163,65 @@ def test_refresh_of_cached_chat_without_session_says_so(db: Path) -> None:
     fetch_chat(UUID, db_path=db, session=session_for(FakeSource([])))
     with pytest.raises(TargetNotFound, match="cannot be refreshed"):
         fetch_chat(UUID, refresh=True, db_path=db, session=None)
+
+
+# ---------------------------------------------------------------- projects
+
+
+class ProjectSource(FakeSource):
+    """A source that also lists project chats and reports a project id."""
+
+    def __init__(self, refs: list[ChatRef], body: str = "hi", title: str = "Chat") -> None:
+        super().__init__(refs, body)
+        self.project_calls: list[str] = []
+        self.title = title
+
+    def list_project_chats(self, project: str, limit: int = 50) -> list[ChatRef]:
+        self.project_calls.append(project)
+        return self.refs[:limit]
+
+    def fetch_chat(self, url_or_id: str) -> ExtractedChat:
+        self.fetched.append(url_or_id)
+        chat = extracted(chat_id_from_url(url_or_id), self.body, self.title)
+        return ExtractedChat(
+            id=chat.id,
+            title=chat.title,
+            url=chat.url,
+            turns=chat.turns,
+            project_id="g-p-abc",
+        )
+
+
+def test_fetch_with_project_records_membership(tmp_path: Path) -> None:
+    db = tmp_path / "bridge.db"
+    source = ProjectSource([ChatRef(id=UUID, title="Plan", url="u")], title="Plan")
+    result = fetch_chat("Plan", db_path=db, session=session_for(source), project="Test project")
+    assert result.chat.project == "Test project"
+    assert result.chat.project_id == "g-p-abc"
+    assert source.project_calls == ["Test project"]
+    assert source.list_calls == 0
+
+
+def test_fetch_with_project_uses_the_project_listing(tmp_path: Path) -> None:
+    db = tmp_path / "bridge.db"
+    source = ProjectSource([ChatRef(id=UUID, title="Plan", url="u")], title="Plan")
+    fetch_chat("Plan", db_path=db, session=session_for(source), project="Test project")
+    assert source.project_calls == ["Test project"]
+    assert source.list_calls == 0
+
+
+def test_project_cache_hit_needs_no_browser(tmp_path: Path) -> None:
+    db = tmp_path / "bridge.db"
+    source = ProjectSource([ChatRef(id=UUID, title="Plan", url="u")], title="Plan")
+    fetch_chat("Plan", db_path=db, session=session_for(source), project="Test project")
+    again = fetch_chat("Plan", db_path=db, project="Test project")
+    assert again.outcome == "cached"
+    assert again.chat.project == "Test project"
+
+
+def test_project_scope_excludes_chats_from_other_projects(tmp_path: Path) -> None:
+    db = tmp_path / "bridge.db"
+    source = ProjectSource([ChatRef(id=UUID, title="Plan", url="u")], title="Plan")
+    fetch_chat("Plan", db_path=db, session=session_for(source), project="Test project")
+    with pytest.raises(TargetNotFound):
+        fetch_chat("Plan", db_path=db, project="Another project")

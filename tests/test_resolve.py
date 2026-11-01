@@ -5,6 +5,8 @@ import pytest
 from chatgpt_bridge.resolve import (
     AmbiguousTarget,
     TargetNotFound,
+    direct_resolved,
+    project_id_from_url,
     resolve_from_cache,
     resolve_with_listing,
     target_id,
@@ -136,3 +138,49 @@ def test_listing_resolution_rejects_empty_target() -> None:
 def test_listing_resolution_short_id_prefix_missing() -> None:
     with pytest.raises(TargetNotFound, match="visible chat list"):
         resolve_with_listing("abc123", [ref("zzz999", "Other")])
+
+
+# ---------------------------------------------------------------- projects
+
+PROJECT_ID = "g-p-6ae70048e0988191babe7d3b4bd2619f"
+PROJECT_CHAT = f"https://chatgpt.com/g/{PROJECT_ID}/c/{UUID}"
+PROJECT_CHAT_SLUGGED = f"https://chatgpt.com/g/{PROJECT_ID}-test-project/c/{UUID}"
+
+
+def test_project_id_from_url_reads_the_id() -> None:
+    assert project_id_from_url(PROJECT_CHAT) == PROJECT_ID
+    assert project_id_from_url(PROJECT_CHAT_SLUGGED) == PROJECT_ID
+
+
+def test_project_id_from_url_is_none_for_plain_chats() -> None:
+    assert project_id_from_url(f"https://chatgpt.com/c/{UUID}") is None
+    assert project_id_from_url("not a url") is None
+
+
+def test_direct_resolved_keeps_the_project_url() -> None:
+    resolved = direct_resolved(PROJECT_CHAT)
+    assert resolved is not None
+    assert resolved.id == UUID
+    assert resolved.url == PROJECT_CHAT
+    assert resolved.project_id == PROJECT_ID
+
+
+def test_direct_resolved_plain_chat_has_no_project() -> None:
+    resolved = direct_resolved(f"https://chatgpt.com/c/{UUID}")
+    assert resolved is not None
+    assert resolved.project_id is None
+    assert resolved.url == f"https://chatgpt.com/c/{UUID}"
+
+
+def test_listing_resolution_carries_project_metadata() -> None:
+    ref = ChatRef(
+        id=UUID,
+        title="Plan",
+        url=PROJECT_CHAT,
+        section="projects",
+        project="Test project",
+        project_id=PROJECT_ID,
+    )
+    resolved = resolve_with_listing("Plan", [ref])
+    assert resolved.project == "Test project"
+    assert resolved.project_id == PROJECT_ID

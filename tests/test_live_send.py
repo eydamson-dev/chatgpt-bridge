@@ -93,3 +93,39 @@ def test_create_send_and_read_back(tmp_path: Path) -> None:
     conn = store.connect(db)
     assert store.last_send(conn) is not None
     conn.close()
+
+
+PROJECT_NAME = "chatgpt-bridge test"
+
+
+def test_create_and_send_inside_a_project(tmp_path: Path) -> None:
+    db = tmp_path / "project-send.db"
+    created = create_chat(
+        "chatgpt-bridge project write test. Reply with exactly: OK",
+        db_path=db,
+        session=session_factory(),
+        project=PROJECT_NAME,
+    )
+    assert created.outcome == "sent"
+    assert created.chat is not None
+    assert created.chat.project == PROJECT_NAME
+    assert "/g/" in created.chat.url
+
+    stored = store.connect(db)
+    row = stored.execute(
+        "SELECT project, project_id FROM chats WHERE id = ?", (created.chat.id,)
+    ).fetchone()
+    stored.close()
+    assert row["project"] == PROJECT_NAME
+    assert row["project_id"].startswith("g-p-")
+
+    sent = send_message(
+        created.chat.url,
+        "chatgpt-bridge project follow-up. Reply with exactly: DONE",
+        db_path=db,
+        session=session_factory(),
+        project=PROJECT_NAME,
+    )
+    assert sent.outcome == "sent"
+    assert sent.chat is not None
+    assert len(sent.chat.turns) > len(created.chat.turns)

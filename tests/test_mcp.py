@@ -123,6 +123,7 @@ def test_tool_surface_is_explicit() -> None:
         "doctor",
         "send_message",
         "create_chat",
+        "projects",
     }
     assert not any(name for name in names if name in {"sync", "delete_chat", "rename_chat"})
 
@@ -164,3 +165,83 @@ def test_write_tools_require_confirmation() -> None:
     assert "confirm=true" in send and "expected_chat_id" in send
     assert "confirm=true" in create
     assert "untrusted" in send
+
+
+# ---------------------------------------------------------------- projects
+
+
+class _StubBrowser:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def __enter__(self) -> _StubBrowser:
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        return False
+
+    def connect(self) -> None:
+        pass
+
+
+def test_projects_tool_lists_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    from chatgpt_bridge.adapters.chatgpt import ProjectRef
+
+    class _Adapter:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def list_projects(self):
+            return [ProjectRef("Test project"), ProjectRef("Empty", has_chats=False)]
+
+    monkeypatch.setattr(mcp_server, "Browser", _StubBrowser)
+    monkeypatch.setattr(mcp_server, "ChatGPTAdapter", _Adapter)
+    payload = mcp_server.projects()
+    assert payload["ok"] is True
+    assert payload["projects"][0]["name"] == "Test project"
+    assert payload["projects"][1]["has_chats"] is False
+
+
+def test_projects_tool_reports_browser_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("no browser")
+
+    monkeypatch.setattr(mcp_server, "Browser", _boom)
+    payload = mcp_server.projects()
+    assert payload["ok"] is False
+    assert payload["error"] == "RuntimeError"
+
+
+def test_chats_stored_scoped_to_project(seeded: Path) -> None:
+    payload = mcp_server.chats(project="Other project")
+    assert payload["chats"] == []
+    assert payload["project"] == "Other project"
+
+
+def test_search_scoped_to_project_returns_hint(seeded: Path) -> None:
+    payload = mcp_server.search_chats("pkg-config", project="Other project")
+    assert payload["data"]["hits"] == []
+    assert "in project 'Other project'" in payload["data"]["hint"]
+
+
+def test_send_dry_run_reports_the_project(seeded: Path) -> None:
+    from chatgpt_bridge import store
+
+    conn = store.connect()
+    conn.execute("UPDATE chats SET project = 'Test project' WHERE id = ?", (UUID,))
+    conn.close()
+
+    payload = mcp_server.send_message("fedora", "hello", project="Test project")
+    assert payload["ok"] is True
+    assert payload["project"] == "Test project"
+
+
+def test_send_dry_run_project_scope_excludes_other_projects(seeded: Path) -> None:
+    payload = mcp_server.send_message("fedora", "hello", project="Other project")
+    assert payload["ok"] is False
+
+
+def test_create_dry_run_reports_the_project() -> None:
+    payload = mcp_server.create_chat("hello", project="Test project")
+    assert payload["dry_run"] is True
+    assert payload["project"] == "Test project"

@@ -3,6 +3,41 @@
 User-visible changes only. Implementation detail lives in git history,
 `PLAN.md`, and `docs/HANDOFF.md`.
 
+## 0.4.0 — ChatGPT Projects
+
+Reads and writes now understand ChatGPT Projects. Chats fetched from a project
+record which project they belong to, so you can list and search them by project
+without opening the browser.
+
+### Added
+
+- `chatgpt-bridge projects` — list projects by name.
+- `--project NAME` on `chats`, `fetch`, `search`, `send`, and `new`.
+- MCP `projects()` and a `project` parameter on `chats`, `fetch_chat`,
+  `search_chats`, `send_message`, and `create_chat`.
+- Schema v4: `chats.project` (display name) and `chats.project_id`
+  (`g-p-<hex>`, authoritative) plus an index. A re-fetch without `--project`
+  keeps the membership.
+- `new --project` creates the chat inside the project, which therefore uses the
+  project's instructions and files.
+
+### Behaviour
+
+- `chats --stored --project NAME` filters locally, with no browser.
+- `search --project NAME` is scoped, and its hint names the project.
+- `fetch --project NAME` resolves inside the project and stores the membership.
+- `send --project NAME` shows `project / title` in the confirmation prompt.
+- `projects` reads names only; a project's chats are listed with
+  `chats --project NAME`.
+
+### Fixed
+
+- A project chat does not load at `/c/<id>`; it needs
+  `/g/<project>/c/<chat>`. `fetch` and `send` now open that URL, which is what
+  made project chats fail with "could not parse the page".
+- The projects list renders incrementally, so reading it as soon as the first row
+  appeared dropped the rest.
+
 ## 0.3.1 — clearer empty search results
 
 A search that finds nothing now explains why instead of printing a bare
