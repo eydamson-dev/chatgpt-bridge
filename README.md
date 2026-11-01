@@ -311,6 +311,16 @@ copy when the reply arrives.
 - `status` shows the last send time. The `send_log` table stores chat ID, time,
   and status only — never message text.
 
+## Using it with an agent
+
+Two ways an agent can reach ChatGPT, and they should be used together:
+
+- **The MCP server** (below) gives the agent the tools.
+- **An agent skill** teaches it the safe procedure: read first, dry-run every
+  write, never retry an `unknown` send, and stop when the target is ambiguous.
+  The skill lives in your OpenCode config, not in this repo, and must be kept in
+  step with the CLI. See `docs/HANDOFF.md`, "Agent skill".
+
 ## OpenCode integration
 
 Add to `~/.config/opencode/opencode.json`, using the absolute path printed by

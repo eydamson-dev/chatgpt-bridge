@@ -144,6 +144,20 @@ clients do not necessarily inherit your shell `PATH`.
 needs a `pyproject.toml` in the current directory. From anywhere else, use the
 installed command or `.venv/bin/chatgpt-bridge`.
 
+## Agent skill (lives outside the repo)
+
+An agent skill at `~/.config/opencode/skills/chatgpt-bridge/SKILL.md` tells agents
+how to use the CLI and MCP safely. It is deliberately **not** in this repo: it is
+about how this user works, not about the code.
+
+It is a copy of procedure, so it drifts. **When a command, flag, exit code, or
+rule changes, update the skill in the same session.** Check its flags against
+`chatgpt-bridge <command> --help`. The skill's last sync was 0.4.0.
+
+The global `~/.config/opencode/AGENTS.md` has a short `ChatGPT Conversations`
+section that makes agents load the skill before any ChatGPT action. It is the
+reason the skill is used without being named.
+
 ## Verify before changing anything
 
 ```bash
