@@ -15,6 +15,8 @@ reading and search. They can also send one explicitly confirmed message to an
 existing chat, or create one new chat with one message.
 
 - **Repository:** <https://github.com/eydamson-dev/chatgpt-bridge> (public, MIT).
+  The default and only branch is `main`. CI triggers on `main` and on pull
+  requests; `.github/workflows/ci.yml` holds the branch filter.
 - Contains code and docs only. Chat data never enters the repository; the
   database is git-ignored.
 
