@@ -252,6 +252,10 @@ class _SendPage:
             }
         raise AssertionError(f"unexpected script: {script[:40]}")
 
+    def fill(self, selector: str, value: str) -> None:
+        assert selector == chatgpt.COMPOSER
+        self.typed = self.typed_override or value
+
     def click(self, selector: str) -> None:
         self.clicks.append(selector)
         if selector == chatgpt.SEND_BUTTON:
@@ -450,6 +454,10 @@ class _ProjectSendPage:
             }
         raise AssertionError(f"unexpected script: {script[:40]}")
 
+    def fill(self, selector: str, value: str) -> None:
+        assert selector == chatgpt.COMPOSER
+        self.typed = self.typed_override or value
+
     def click(self, selector: str, timeout: int | None = None) -> None:
         self.clicks.append(selector)
         if "Start new chat in project" in selector:
@@ -605,3 +613,22 @@ def test_create_project_reports_a_project_that_never_appears(
     adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
     with pytest.raises(chatgpt.ProjectCreateFailed, match="before retrying"):
         adapter.create_project("Trip")
+
+
+def test_send_accepts_editor_reflowed_whitespace() -> None:
+    """The composer reflows paragraph breaks; the words must still match."""
+    message = "line one\n\nline two"
+    page = _SendPage(chat_url(UUID), typed_override="line one\n\n\n\nline two")
+    adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
+    assert adapter.send_message(UUID, message).id == UUID
+    assert chatgpt.SEND_BUTTON in page.clicks
+
+
+def test_send_refuses_a_duplicated_message() -> None:
+    """A re-render during insertion used to duplicate the text; it must not send."""
+    message = "line one\n\nline two"
+    page = _SendPage(chat_url(UUID), typed_override=f"{message}\n\n{message}")
+    adapter = ChatGPTAdapter(_FakeBrowser(page), page_delay_s=0)  # type: ignore[arg-type]
+    with pytest.raises(chatgpt.SendFailed, match="did not accept"):
+        adapter.send_message(UUID, message)
+    assert chatgpt.SEND_BUTTON not in page.clicks

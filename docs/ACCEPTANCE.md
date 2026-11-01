@@ -212,6 +212,12 @@ Verified 2026-11-01 against the live browser.
 No gated live test was added: creating a project on every CI run would leave
 clutter in the user's account, so the write was verified by hand once.
 
+### Bug found while sending a long message
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| "the composer did not accept the message exactly" on a 1972-char message; read-back was 3986 chars | `keyboard.insert_text` races the composer's re-render, duplicating and reordering the text | set the text with `fill()`; compare words with whitespace collapsed (0.5.2) |
+
 ### Bug found after the 0.5.0 push
 
 | Symptom | Cause | Fix |

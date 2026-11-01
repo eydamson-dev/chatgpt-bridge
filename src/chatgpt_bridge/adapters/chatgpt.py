@@ -635,10 +635,17 @@ class ChatGPTAdapter:
             raise ComposerDraftPresent(
                 "the composer already contains a draft; clear it in the browser first"
             )
-        page.click(COMPOSER)
-        page.keyboard.insert_text(message)
+        # fill() sets the whole text in one shot. Typing a long multi-line
+        # message with keyboard.insert_text makes the editor re-render while it
+        # is still inserting, which duplicates and reorders the text.
+        try:
+            page.fill(COMPOSER, message)
+        except Exception as exc:
+            self._clear_composer(page)
+            raise SendFailed("the composer did not accept the message; nothing was sent") from exc
         typed = page.evaluate(COMPOSER_TEXT_JS) or ""
-        if not isinstance(typed, str) or _normalise(typed) != _normalise(message):
+        # The editor reflows paragraph breaks, so compare words, not whitespace.
+        if not isinstance(typed, str) or _comparable(typed) != _comparable(message):
             self._clear_composer(page)
             raise SendFailed("the composer did not accept the message exactly; nothing was sent")
 
@@ -805,6 +812,11 @@ def _parse_chat(
 
 def _normalise(text: str) -> str:
     return text.replace("\r\n", "\n").strip()
+
+
+def _comparable(text: str) -> str:
+    """Collapse whitespace so editor reflow does not look like a changed message."""
+    return " ".join(text.split())
 
 
 def _clean_title(title: str) -> str:

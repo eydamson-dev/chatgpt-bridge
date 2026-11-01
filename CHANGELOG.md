@@ -3,6 +3,17 @@
 User-visible changes only. Implementation detail lives in git history,
 `PLAN.md`, and `docs/HANDOFF.md`.
 
+## 0.5.2 — long messages
+
+### Fixed
+
+- Sending a long multi-line message could duplicate and reorder its text: the
+  composer re-renders while `keyboard.insert_text` is still typing, and the
+  copied text landed twice. The message is now set with `fill()` in one step.
+- The exact-match check now compares words with whitespace collapsed, because
+  the editor reflows paragraph breaks. A duplicated or altered message is still
+  refused before Send.
+
 ## 0.5.1 — creation wait
 
 Fixes `new-project` failing on a fresh page.
