@@ -508,6 +508,10 @@ class _ProjectCreatePage:
     ) -> None:
         if selector == chatgpt.PROJECT_ROW:
             return
+        if selector == chatgpt.PROJECT_CREATE_BUTTON:
+            if not self._button:
+                raise RuntimeError("create control did not appear")
+            return
         if selector == chatgpt.PROJECT_CREATE_DIALOG:
             if state == "hidden":
                 if self.dialog_open:

@@ -3,6 +3,17 @@
 User-visible changes only. Implementation detail lives in git history,
 `PLAN.md`, and `docs/HANDOFF.md`.
 
+## 0.5.1 — creation wait
+
+Fixes `new-project` failing on a fresh page.
+
+### Fixed
+
+- The `/projects` main list renders before the sidebar, and `Add new project`
+  lives only in the sidebar. Creation now waits for that control instead of
+  reading the page immediately, which failed with "the 'Add new project' control
+  is not on the projects page" on a cold load.
+
 ## 0.5.0 — create a project
 
 Projects can now be created from the tool, not only used.

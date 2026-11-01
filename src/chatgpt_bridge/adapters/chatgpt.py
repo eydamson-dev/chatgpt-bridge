@@ -394,9 +394,18 @@ class ChatGPTAdapter:
             raise ProjectCreateFailed(f"project name is longer than {PROJECT_NAME_MAX} characters")
         with self.browser.open_tab(PROJECTS_URL) as page:
             page.wait_for_selector(PROJECT_ROW, timeout=LOAD_TIMEOUT_MS)
+            # The main list renders before the sidebar hydrates, and the create
+            # control lives only in the sidebar.
+            try:
+                page.wait_for_selector(PROJECT_CREATE_BUTTON, timeout=PROJECT_DIALOG_TIMEOUT_MS)
+            except Exception as exc:
+                raise ProjectCreateFailed(
+                    "the 'Add new project' control is not on the projects page; the "
+                    "sidebar may be collapsed, or the layout may have changed"
+                ) from exc
             if not (page.evaluate(OPEN_PROJECT_DIALOG_JS) or {}).get("clicked"):
                 raise ProjectCreateFailed(
-                    "the 'Add new project' control is not on the projects page; "
+                    "the 'Add new project' control could not be clicked; "
                     "the layout may have changed"
                 )
             try:

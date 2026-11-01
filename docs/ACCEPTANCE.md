@@ -212,6 +212,12 @@ Verified 2026-11-01 against the live browser.
 No gated live test was added: creating a project on every CI run would leave
 clutter in the user's account, so the write was verified by hand once.
 
+### Bug found after the 0.5.0 push
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `new-project` → "the 'Add new project' control is not on the projects page" | the main list renders before the sidebar hydrates, and the control is sidebar-only | wait for the control itself before reading (0.5.1) |
+
 ### Test totals at 0.5.0
 
 - 311 offline tests, 4 read live tests, 2 gated send live tests.

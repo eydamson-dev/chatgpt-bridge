@@ -5,7 +5,7 @@ not history. Update it at the end of every milestone: rewrite the "Current state
 and "Next step" sections, and append to "Decisions" and "Gotchas" only when
 something durable was learned.
 
-Last updated: 2026-11-01 (0.5.0 create a project)
+Last updated: 2026-11-01 (0.5.1 create a project)
 
 ## What this project is
 
@@ -32,7 +32,7 @@ project with a name.
 
 ## Current state
 
-Version **0.5.0**. Working, verified against a live browser (Brave on
+Version **0.5.1**. Working, verified against a live browser (Brave on
 `127.0.0.1:9222`):
 
 - Target resolution by URL, full ID, ID prefix, exact title, unique title
@@ -343,6 +343,11 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
   `/g/g-p-<id>/c/<chat-id>`; after a send the address bar shows the slugged
   `/g/g-p-<id>-<project-slug>/c/<chat-id>`. `chat_id_from_url()` handles both,
   `CHAT_URL_RE` handles neither.
+- **The projects page hydrates in two stages.** `div[data-project-row]` is in
+  the main area almost immediately, but the sidebar (and with it `Add new
+  project`) appears roughly a second later. Wait for the create control, not
+  for the row — reading too early looks like a missing button. This is what
+  0.5.0 got wrong and 0.5.1 fixed.
 - **The sidebar "Add new project" button is covered by an overlay.** A plain
   `page.click('button[aria-label="Add new project"]')` times out: the Projects
   section header and the sidebar scroll container intercept pointer events. The

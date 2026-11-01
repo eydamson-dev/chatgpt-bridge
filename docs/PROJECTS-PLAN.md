@@ -341,6 +341,10 @@ Verified live on 2026-11-01 by creating `chatgpt-bridge create test`.
 Projects section header and the sidebar scroll container intercept pointer
 events. The button is clicked in-page instead (`OPEN_PROJECT_DIALOG_JS`).
 
+**Trap.** The main project list renders before the sidebar, so waiting on
+`div[data-project-row]` and reading immediately finds no create control. Wait
+for `button[aria-label="Add new project"]` itself (0.5.1).
+
 **Rules.** Only the name is set. The name must read back exactly before Create
 is clicked; a mismatch closes the dialog and creates nothing. After Create, the
 project must appear as a row or the URL must match the project page, otherwise
