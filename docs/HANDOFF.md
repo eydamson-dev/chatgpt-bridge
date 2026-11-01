@@ -370,6 +370,10 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
   out of order (1972 chars in, 3986 out). Set the message with `fill()` instead;
   it lands in one shot. The verification compares words with whitespace
   collapsed, because the editor reflows paragraph breaks.
+- **A running MCP server keeps its old code, including the config schema.** After
+  adding `[browser] mode`, a still-running 0.5.x MCP server rejected the key as
+  unknown and every tool that reads settings failed with "Error executing tool".
+  Restart the MCP server (or the OpenCode backend) after upgrading.
 - **A logged-out ChatGPT hides the sidebar instead of removing it.** The nav is
   in the DOM with `display: none`, so waiting for visibility looks like a 30s
   hang and a raw traceback. Wait for it attached, then for visible with a short
