@@ -129,3 +129,26 @@ throwaway.
   temporary database and only asserted structure.
 - The write path has one unavoidable edge: after a reply timeout the message may
   have been accepted. That is reported as `unknown` and is never retried.
+
+## 0.3.1 — search hint
+
+Verified against the real store (3 chats, 12 messages):
+
+| Case | Command | Result |
+|---|---|---|
+| No hit, no title match | `search "kubernetes"` | states the term, that 3 chats are stored, that titles are not searched, and how to fetch |
+| `--json`, no hit | `search "kubernetes" --json` | stdout `[]`, hint on stderr |
+| Hits found | `search "OK"` | 8 hits, no hint |
+| MCP, no hit | `search_chats("kubernetes")` | `hits: []`, `hint` populated |
+| MCP, hits | `search_chats("OK")` | `hits: 8`, `hint: null` |
+
+Title-match hinting is covered by unit tests (`tests/test_query.py`,
+`tests/test_cli.py`, `tests/test_mcp.py`) rather than a live case, because every
+stored chat's messages already contain the words in its title.
+
+### CLI verification by the user, 2026-11-01
+
+`doctor`, `chats`, `chats --stored`, `fetch`, `show`, `search`, `send
+--dry-run`, `send` with prompt answered `n`, `send --yes`, and `new --yes` all
+behaved as documented. `send --yes` appended one exchange (2 → 4 messages) and
+`new --yes` created and stored a chat; `status` reported the new `last_send`.

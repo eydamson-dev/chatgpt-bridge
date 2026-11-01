@@ -454,5 +454,6 @@ Deviations recorded during the rework:
 - Optional bulk discovery, if you ever want it, behind an explicit flag and off
   by default.
 - Several targets in one `fetch` call (`fetch a b c`), still undecided.
-- Publishing to PyPI, if install-from-source is not enough.
 - Edit/delete/rename and branch switching remain deliberately out of scope.
+- PyPI publication is **not planned** (2026-11-01). Install from git or a local
+  clone; `uv tool install git+…` covers other machines.

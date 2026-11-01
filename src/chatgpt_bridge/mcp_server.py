@@ -287,6 +287,7 @@ def search_chats(
         {
             "query": text,
             "stored_chats": query.counts().chats,
+            "hint": None if hits else query.search_hint(text),
             "hits": [
                 {
                     "chat_id": hit.chat_id,

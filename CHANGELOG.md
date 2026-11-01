@@ -3,6 +3,30 @@
 User-visible changes only. Implementation detail lives in git history,
 `PLAN.md`, and `docs/HANDOFF.md`.
 
+## 0.3.1 — clearer empty search results
+
+A search that finds nothing now explains why instead of printing a bare
+"no matches". Titles are not indexed, so searching for a chat's name used to
+look like a broken search rather than a missing fetch.
+
+### Changed
+
+- `search` with no hits reports the term, how many chats are stored, that chat
+  titles are not searched, and how to fetch a chat from the sidebar.
+- If the term matches a stored chat's **title**, the hint points at that chat
+  and suggests `show` instead.
+- `search --json` keeps stdout a valid JSON array and writes the hint to
+  stderr, so scripts are unaffected.
+- MCP `search_chats` returns the same text in a new `hint` field when `hits` is
+  empty, and `null` when it finds something.
+
+### Documentation
+
+- `README.md` now has full install instructions: from git, from a clone, an
+  editable development install, running without installing, verifying,
+  upgrading, removing, and registering the MCP server. The project is
+  deliberately **not published to PyPI**.
+
 ## 0.3.0 — explicit write path
 
 Adds the only two write operations, both confirmed and one message per call:

@@ -76,6 +76,16 @@ def test_search_scoped_to_chat(seeded: Path) -> None:
     assert payload["data"]["hits"]
 
 
+def test_search_reports_no_hint_when_it_finds_hits(seeded: Path) -> None:
+    assert mcp_server.search_chats("pkg-config")["data"]["hint"] is None
+
+
+def test_search_hints_that_a_title_matched_instead(seeded: Path) -> None:
+    payload = mcp_server.search_chats("fedora")
+    assert payload["data"]["hits"] == []
+    assert "a stored chat is titled" in payload["data"]["hint"]
+
+
 def test_forget_requires_confirm(seeded: Path) -> None:
     payload = mcp_server.forget_chat("fedora")
     assert payload["ok"] is False

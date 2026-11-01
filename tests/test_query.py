@@ -88,6 +88,41 @@ def test_search_scope_missing_chat(db: Path) -> None:
         query.search("x", db_path=db, chat="nothing")
 
 
+def test_search_hint_points_at_a_matching_stored_title(db: Path) -> None:
+    hint = query.search_hint("fedora", db_path=db)
+    assert "a stored chat is titled 'Fedora notes'" in hint
+    assert "chatgpt-bridge show" in hint
+
+
+def test_search_hint_is_case_insensitive(db: Path) -> None:
+    assert "Fedora notes" in query.search_hint("FEDORA", db_path=db)
+
+
+def test_search_hint_explains_when_nothing_matches(db: Path) -> None:
+    hint = query.search_hint("zzzzzz", db_path=db)
+    assert "no stored message contains 'zzzzzz'" in hint
+    assert "2 chats are stored" in hint
+    assert "titles are not searched" in hint
+
+
+def test_search_hint_uses_singular_for_one_chat(tmp_path: Path) -> None:
+    path = tmp_path / "one.db"
+    conn = store.connect(path)
+    turns = [store.Turn(role="user", markdown="hello", text="hello")]
+    store.save_chat(
+        conn,
+        chat_id=UUID,
+        title="Only chat",
+        url=f"https://chatgpt.com/c/{UUID}",
+        section=None,
+        turns=turns,
+        hash_value=store.content_hash(turns),
+    )
+    conn.close()
+    hint = query.search_hint("zzzzzz", db_path=path)
+    assert "Only 1 chat is stored" in hint
+
+
 def test_counts_and_last_fetch(db: Path) -> None:
     counts = query.counts(db_path=db)
     assert (counts.chats, counts.turns) == (2, 3)

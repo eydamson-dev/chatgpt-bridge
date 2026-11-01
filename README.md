@@ -57,12 +57,100 @@ CLI / MCP server
 
 ## Install
 
+**Not on PyPI.** Install from source or straight from git.
+
+### From git (recommended)
+
+One command, no clone needed:
+
 ```bash
-uv tool install --editable ~/projects/chatgpt-bridge   # development
-uv tool install ~/projects/chatgpt-bridge              # normal use
+uv tool install git+https://github.com/eydamson-dev/chatgpt-bridge
 ```
 
-Installs `chatgpt-bridge` and `chatgpt-bridge-mcp`.
+### From a local clone
+
+```bash
+git clone https://github.com/eydamson-dev/chatgpt-bridge
+cd chatgpt-bridge
+uv tool install .
+```
+
+### For development
+
+Editable install: source edits take effect immediately, no reinstall.
+
+```bash
+git clone https://github.com/eydamson-dev/chatgpt-bridge
+cd chatgpt-bridge
+uv sync
+uv tool install --editable .
+```
+
+`uv sync` creates the project virtualenv; `--editable` puts the console scripts
+on your `PATH` while pointing them at that venv.
+
+### Run without installing
+
+Inside the clone, prefix commands with `uv run`:
+
+```bash
+uv run chatgpt-bridge doctor
+```
+
+`uv run` needs a `pyproject.toml` in the current directory, so this only works
+from inside the repository.
+
+### Both entry points
+
+Any install provides two commands:
+
+| Command | Purpose |
+|---|---|
+| `chatgpt-bridge` | the CLI |
+| `chatgpt-bridge-mcp` | the stdio MCP server |
+
+### Verify
+
+```bash
+chatgpt-bridge --version
+chatgpt-bridge doctor
+```
+
+`doctor` needs the browser running (see below); `--version` does not.
+
+### Upgrade and remove
+
+```bash
+uv tool upgrade chatgpt-bridge      # git installs
+uv tool uninstall chatgpt-bridge
+```
+
+### Register the MCP server
+
+Point your MCP client at the absolute path of the installed server:
+
+```bash
+command -v chatgpt-bridge-mcp
+```
+
+OpenCode, in `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "chatgpt-bridge": {
+        "type": "local",
+        "command": ["/home/you/.local/bin/chatgpt-bridge-mcp"]
+      }
+    }
+  }
+}
+```
+
+Restart the client, or it may pick the config up live. The seven read tools are
+safe to leave enabled; `send_message` and `create_chat` still require
+`confirm=true`, so enable the server per session if you prefer.
 
 ## Browser setup
 
@@ -134,6 +222,31 @@ observed.
 If several chats match, nothing is fetched; the candidates are listed and you
 pick one. If nothing matches, `chats` shows what is available.
 
+### Searching
+
+`search` reads stored message text only. It never opens a page, and it does not
+index chat titles — so searching for a chat's name finds nothing until you have
+fetched that chat.
+
+When a search finds nothing, the hint says which case you are in:
+
+```
+$ chatgpt-bridge search "kubernetes"
+no stored message contains 'kubernetes'. Only 3 chats are stored, and chat
+titles are not searched. If you meant a chat from the sidebar, fetch it first:
+chatgpt-bridge fetch "<title>"
+```
+
+```
+$ chatgpt-bridge search "Fedora notes"
+no stored message contains 'Fedora notes', but a stored chat is titled
+'Fedora notes'. Read it with: chatgpt-bridge show 'Fedora notes'
+```
+
+With `--json`, stdout stays a valid JSON array and the hint goes to stderr, so
+scripts are unaffected. The MCP `search_chats` tool returns the same text in a
+`hint` field when `hits` is empty.
+
 ### Storage behaviour
 
 The SQLite database at `~/.local/share/chatgpt-bridge/bridge.db` (Linux) **is**
@@ -165,14 +278,19 @@ copy when the reply arrives.
 
 ## OpenCode integration
 
-Add to `~/.config/opencode/opencode.json`:
+Add to `~/.config/opencode/opencode.json`, using the absolute path printed by
+`command -v chatgpt-bridge-mcp` (a bare name fails when OpenCode's `PATH`
+differs from your shell's):
 
 ```json
 "chatgpt-bridge": {
   "type": "local",
-  "command": ["chatgpt-bridge-mcp"]
+  "command": ["/home/you/.local/bin/chatgpt-bridge-mcp"]
 }
 ```
+
+If you have not installed the package, point at the clone's virtualenv instead:
+`/path/to/chatgpt-bridge/.venv/bin/chatgpt-bridge-mcp`.
 
 Tools: `status`, `chats`, `fetch_chat`, `get_chat`, `search_chats`,
 `forget_chat`, `doctor`, `send_message`, `create_chat`.

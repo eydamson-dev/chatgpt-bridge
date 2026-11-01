@@ -68,6 +68,35 @@ def search(
         conn.close()
 
 
+def search_hint(query: str, db_path: Path | None = None) -> str:
+    """Explain a search that found nothing, using the local store only.
+
+    Titles are not indexed, so a term that names a chat produces no hits. Saying
+    that plainly is more useful than a bare "no matches".
+    """
+    term = query.strip()
+    conn = store.connect(db_path)
+    try:
+        summaries = store.chat_summaries(conn)
+    finally:
+        conn.close()
+    total = len(summaries)
+    folded = term.casefold()
+    titled = [summary for summary in summaries if folded and folded in summary.title.casefold()]
+    if titled:
+        best = titled[0]
+        return (
+            f"no stored message contains {term!r}, but a stored chat is titled "
+            f"{best.title!r}. Read it with: chatgpt-bridge show {best.title!r}"
+        )
+    plural = "chat is" if total == 1 else "chats are"
+    return (
+        f"no stored message contains {term!r}. Only {total} {plural} stored, and "
+        "chat titles are not searched. If you meant a chat from the sidebar, "
+        'fetch it first: chatgpt-bridge fetch "<title>"'
+    )
+
+
 def counts(db_path: Path | None = None) -> store.Counts:
     conn = store.connect(db_path)
     try:

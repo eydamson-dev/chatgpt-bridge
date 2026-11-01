@@ -501,10 +501,11 @@ def _cmd_search(args: argparse.Namespace, resolved: config.Resolved) -> int:
         f"{hit.chat_id[:8]}  [{hit.position}] {hit.role}\n  {hit.snippet}" for hit in hits
     )
     if not hits:
-        text = (
-            "no matches in stored chats "
-            f"({query.counts().chats} stored). Fetch more with: chatgpt-bridge fetch <target>"
-        )
+        hint = query.search_hint(args.query)
+        # Keep stdout valid JSON for scripts, but still explain the empty result.
+        if args.json and not args.quiet:
+            print(hint, file=sys.stderr)
+        text = hint
     _emit(args, payload, text)
     return EXIT_OK
 

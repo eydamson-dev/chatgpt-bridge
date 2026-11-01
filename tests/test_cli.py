@@ -127,12 +127,32 @@ def test_search_text_and_json(seeded: Path, capsys: pytest.CaptureFixture[str]) 
     assert hits[0]["chat_id"] == UUID
 
 
-def test_search_no_matches_mentions_cache_size(
+def test_search_no_matches_explains_titles_are_not_searched(
     seeded: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["search", "zzzzzz"]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "no matches in stored chats (2 stored)" in out
+    assert "no stored message contains 'zzzzzz'" in out
+    assert "2 chats are stored" in out
+    assert "titles are not searched" in out
+
+
+def test_search_json_keeps_stdout_clean_and_hints_on_stderr(
+    seeded: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", "search", "zzzzzz"]) == EXIT_OK
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == []
+    assert "no stored message contains 'zzzzzz'" in captured.err
+
+
+def test_search_no_matches_points_at_a_matching_stored_title(
+    seeded: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["search", "fedora"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "a stored chat is titled 'Fedora notes'" in out
+    assert "chatgpt-bridge show 'Fedora notes'" in out
 
 
 def test_search_scoped_to_chat(seeded: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -28,7 +28,7 @@ existing chat, or create one new chat with one message.
 
 ## Current state
 
-Version **0.3.0**. Working, verified against a live browser (Brave on
+Version **0.3.1**. Working, verified against a live browser (Brave on
 `127.0.0.1:9222`):
 
 - Target resolution by URL, full ID, ID prefix, exact title, unique title
@@ -37,7 +37,11 @@ Version **0.3.0**. Working, verified against a live browser (Brave on
   records the fetch. A second call is served from the local store without the
   browser.
 - `--refresh` refetches and reports `changed: true|false` using a content hash.
-- Search over stored messages (FTS5 trigram), with context snippets.
+- Search over stored messages (FTS5 trigram), with context snippets. An empty
+  result explains itself: the hint states that titles are not indexed, and if
+  the term matches a stored **title** it names that chat and suggests `show`.
+  `--json` keeps stdout a JSON array and sends the hint to stderr; MCP
+  `search_chats` returns it as `hint`.
 - `forget` removes one chat; `reset` clears the whole local store (both prompt).
 - `doctor` checks config, database, CDP reachability, login, and sidebar lookup.
 - `send` appends one confirmed message to an existing chat; `new` creates a chat
@@ -48,7 +52,7 @@ Version **0.3.0**. Working, verified against a live browser (Brave on
   `send_message` is a dry run unless `confirm=true` and `expected_chat_id`
   matches; `create_chat` requires `confirm=true`. Chat text is wrapped as
   untrusted content.
-- 232 unit tests, 2 opt-in read live tests, and 1 gated live send test pass;
+- 240 unit tests, 2 opt-in read live tests, and 1 gated live send test pass;
   `ruff` and `mypy --strict` are clean on Python 3.12 and 3.14.
 - The built wheel includes all three migrations, installs into a clean virtual
   environment, and both entry points work. `.github/workflows/ci.yml` repeats
@@ -91,6 +95,26 @@ tests/test_live_send.py  gated create/send check (`-m live_send`, needs env)
 docs/SEND-MESSAGE-DESIGN.md   write-path decisions, implemented in 0.3.0
 docs/ACCEPTANCE.md            sanitized evidence for every feature
 ```
+
+## Install (no PyPI)
+
+The project is **not published to PyPI** — a deliberate decision, recorded
+below. Install from source or from git.
+
+```bash
+uv tool install git+https://github.com/eydamson-dev/chatgpt-bridge   # from git
+git clone <repo> && cd chatgpt-bridge && uv tool install .           # from a clone
+uv tool install --editable .                                         # development
+uv tool uninstall chatgpt-bridge                                     # remove
+```
+
+Installs two console scripts, `chatgpt-bridge` and `chatgpt-bridge-mcp`. The
+MCP client config needs the **absolute** path from `command -v
+chatgpt-bridge-mcp`; a bare name fails when the client's `PATH` differs.
+
+`uv run chatgpt-bridge …` only works inside the repository, because `uv run`
+needs a `pyproject.toml` in the current directory. From anywhere else, use the
+installed command or `.venv/bin/chatgpt-bridge`.
 
 ## Verify before changing anything
 
@@ -178,6 +202,15 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
 - **2026-11-01 — send log is metadata only.** Schema v3 records chat ID, time,
   status, and error type. Message text lives only in `turns`, written by the
   normal refresh.
+- **2026-11-01 — no PyPI publication.** Install from git or a local clone.
+  Rationale: personal tool over a logged-in browser, terms-of-use grey area, and
+  a public package implies release and support commitments. `uv tool install
+  git+…` covers other machines without it.
+- **2026-11-01 — empty searches explain themselves.** A hitless `search` says
+  that titles are not indexed and how to fetch from the sidebar; if the term
+  matches a stored title it points at `show` instead. This keeps the
+  browser-free rule intact — the hint is computed from the local store, never
+  from the sidebar.
 
 ## Gotchas discovered
 
@@ -244,21 +277,19 @@ uv run chatgpt-bridge new "Start a test chat"          # prompts; writes
 
 ## Next step
 
-Nothing is in flight. Milestones 1–14 in `PLAN.md` §16 are done; 0.3.0 is
+Nothing is in flight. Milestones 1–14 in `PLAN.md` §16 are done; 0.3.1 is
 verified; all unit tests, 2 read live tests, and 1 gated send live test pass.
 `docs/ACCEPTANCE.md` records the full feature run.
 
-For the user's manual test tomorrow:
+The user verified the CLI by hand on 2026-11-01: `doctor`, `chats`, `chats
+--stored`, `fetch`, `show`, `search`, dry run, prompt cancel, `send --yes`, and
+`new --yes` all behaved as designed.
 
-```bash
-uv run chatgpt-bridge send "<a chat>" "Hello" --dry-run
-uv run chatgpt-bridge send "<a chat>" "Hello"          # prompts
-uv run chatgpt-bridge new "Start a test chat"          # prompts
-```
+Remaining, and deliberately not built:
 
-The acceptance run created a few clearly labelled test conversations in the
-account. They are left in place because deletion is deliberately not a feature;
-remove them in the ChatGPT UI if unwanted.
+- `fetch a b c` for several targets (open question).
+- Edit, delete, rename, and branch switching (out of scope).
+- PyPI publication (rejected; see Decisions).
 
 ## Engineering vault
 
@@ -276,6 +307,12 @@ Update the project note when a decision changes, not when code changes.
 ## Open questions for the user
 
 - Should `fetch` accept several targets at once (`fetch a b c`)?
-- Should the package be published to PyPI, or stay install-from-source only?
 - Stored chats do **not** expire; the user rejected an age-based purge. Keep
   `forget` and `reset` as the only deletion paths unless that changes.
+
+Settled:
+
+- **No PyPI publication** (2026-11-01). Install from git or a local clone.
+  Rationale: it is a personal tool driving a logged-in browser, it sits in a
+  terms-of-use grey area, and a public package implies a support and release
+  commitment. `uv tool install git+…` already covers multi-machine use.

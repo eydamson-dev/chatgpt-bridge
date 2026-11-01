@@ -1,6 +1,6 @@
 [project]
 name = "chatgpt-bridge"
-version = "0.3.0"
+version = "0.3.1"
 description = "Read and search your ChatGPT web conversations via a logged-in Chromium browser over CDP."
 readme = "README.md"
 license = { text = "MIT" }
